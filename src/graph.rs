@@ -651,22 +651,7 @@ impl<T: FieldOps + 'static, NS: NodesStorage + 'static> Nodes<T, NS> {
         match me {
             Node::Unknown => panic!("Unknown node"),
             Node::Constant(const_idx) => Ok(self.constants[const_idx]),
-            Node::UnoOp(op, a) => {
-                Ok((&self.ff).op_uno(op,
-                    self.to_const_recursive(NodeIdx(a))?))
-            }
-            Node::Op(op, a, b) => {
-                Ok((&self.ff).op_duo(op,
-                    self.to_const_recursive(NodeIdx(a))?,
-                    self.to_const_recursive(NodeIdx(b))?))
-            }
-            Node::TresOp(op, a, b, c) => {
-                Ok((&self.ff).op_tres(op,
-                    self.to_const_recursive(NodeIdx(a))?,
-                    self.to_const_recursive(NodeIdx(b))?,
-                    self.to_const_recursive(NodeIdx(c))?))
-            }
-            Node::Input(_) => Err(NodeConstErr::InputSignal),
+            _ => { Err(NodeConstErr::InputSignal) }
         }
     }
 
@@ -691,58 +676,6 @@ impl<T: FieldOps + 'static, NS: NodesStorage + 'static> Nodes<T, NS> {
             if let Node::Constant(c_idx) = node {
                 self.constants_idx.insert(self.constants[c_idx], i);
             }
-        }
-    }
-
-    // try to return a constant node if operands are constant, otherwise return
-    // the unmodified node
-    fn try_into_constant(&mut self, n: &Node) -> Result<Node, NodeConstErr> {
-        match n {
-            Node::Unknown => panic!("Unknown node"),
-            Node::Constant(c_idx) => Ok(Node::Constant(*c_idx)),
-            Node::UnoOp(op, a) => {
-                if let Some(Node::Constant(a_idx)) = self.nodes.get(*a) {
-                    let v = (&self.ff).op_uno(*op, self.constants[a_idx]);
-                    let idx = self.const_node_idx_from_value(v);
-                    Ok(self.nodes.get(idx).unwrap())
-                } else {
-                    Err(NodeConstErr::NotConst)
-                }
-            }
-            Node::Op(op, a, b) => {
-                if let (
-                    Some(Node::Constant(a_idx)),
-                    Some(Node::Constant(b_idx))) = (
-                    self.nodes.get(*a),
-                    self.nodes.get(*b)) {
-
-                    let v = (&self.ff).op_duo(*op, self.constants[a_idx], self.constants[b_idx]);
-                    let idx = self.const_node_idx_from_value(v);
-                    Ok(self.nodes.get(idx).unwrap())
-                } else {
-                    Err(NodeConstErr::NotConst)
-                }
-            }
-            Node::TresOp(op, a, b, c) => {
-                if let (
-                    Some(Node::Constant(a_idx)),
-                    Some(Node::Constant(b_idx)),
-                    Some(Node::Constant(c_idx))) = (
-                    self.nodes.get(*a),
-                    self.nodes.get(*b),
-                    self.nodes.get(*c)) {
-
-                    let v = (&self.ff).op_tres(
-                        *op, self.constants[a_idx], self.constants[b_idx],
-                        self.constants[c_idx]);
-                    let const_node_idx =
-                        self.const_node_idx_from_value(v);
-                    Ok(self.nodes.get(const_node_idx).unwrap())
-                } else {
-                    Err(NodeConstErr::NotConst)
-                }
-            }
-            Node::Input(_) => Err(NodeConstErr::InputSignal),
         }
     }
 
@@ -848,8 +781,58 @@ impl<T: FieldOps + 'static, NS: NodesStorage + 'static> NodesInterface for Nodes
     }
 
     fn push(&mut self, n: Node) -> NodeIdx {
-        let n = self.try_into_constant(&n).unwrap_or(n);
-        self.push_noopt(n)
+        match n {
+            Node::Unknown => panic!("Unknown node"),
+            Node::Constant(c_idx) => {
+                let v = self.constants[c_idx];
+                let idx = self.const_node_idx_from_value(v);
+                return NodeIdx(idx);
+            },
+            Node::UnoOp(op, a) => {
+                if let Some(Node::Constant(a_idx)) = self.nodes.get(a) {
+                    let v = (&self.ff).op_uno(op, self.constants[a_idx]);
+                    let idx = self.const_node_idx_from_value(v);
+                    return NodeIdx(idx);
+                } else {
+                    return self.push_noopt(n);
+                }
+            }
+            Node::Op(op, a, b) => {
+                if let (
+                    Some(Node::Constant(a_idx)),
+                    Some(Node::Constant(b_idx))) = (
+                    self.nodes.get(a),
+                    self.nodes.get(b)) {
+
+                    let v = (&self.ff).op_duo(op, self.constants[a_idx], self.constants[b_idx]);
+                    let idx = self.const_node_idx_from_value(v);
+                    return NodeIdx(idx);
+                } else {
+                    return self.push_noopt(n);
+                }
+            }
+            Node::TresOp(op, a, b, c) => {
+                if let (
+                    Some(Node::Constant(a_idx)),
+                    Some(Node::Constant(b_idx)),
+                    Some(Node::Constant(c_idx))) = (
+                    self.nodes.get(a),
+                    self.nodes.get(b),
+                    self.nodes.get(c)) {
+
+                    let v = (&self.ff).op_tres(
+                        op, self.constants[a_idx], self.constants[b_idx],
+                        self.constants[c_idx]);
+                    let idx = self.const_node_idx_from_value(v);
+                    return NodeIdx(idx);
+                } else {
+                    return self.push_noopt(n);
+                }
+            }
+            Node::Input(_) => {
+                return self.push_noopt(n);
+            },
+        }
     }
 
     fn get_inputs_size(&self) -> usize {
