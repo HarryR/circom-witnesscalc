@@ -1,18 +1,24 @@
 use std::{env, fs};
 use std::collections::HashMap;
+use std::error::Error;
 use num_bigint::BigUint;
-use num_traits::{Num, ToBytes};
+use num_traits::{Num, One, ToBytes};
 use circom_witnesscalc::{ast, vm2};
 use circom_witnesscalc::ast::{Literal, Statement, AST};
 use circom_witnesscalc::field::{FieldOps, U254};
 use circom_witnesscalc::parser::parse_ast;
-use circom_witnesscalc::vm2::OpCode;
+use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
 
 struct Args {
     cvm_file: String,
     output_file: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum CompilationError {
+    #[error("Main template ID is not found")]
+    MainTemplateIDNotFound,
+}
 
 fn parse_args() -> Args {
     let mut cvm_file: Option<String> = None;
@@ -66,21 +72,68 @@ fn main() {
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     match &program.prime {
         bn254 => {
-            compile::<U254>(&program);
+            let x = <U254 as One>::one();
+            let circuit = compile::<U254>(&program).unwrap();
+            disassemble::<U254>(&circuit.templates);
+
+            // TODO remove this
+            let mut signals: Vec<Option<U254>> = vec![
+                Some(U254::one()),
+                None,
+                Some(U254::from_str_radix("3", 10).unwrap()),
+                Some(U254::from_str_radix("4", 10).unwrap())
+            ];
+            execute(&circuit.templates, &mut signals, circuit.main_template_id).unwrap();
+            for (i, s) in signals.iter().enumerate() {
+                if let Some(s) = s {
+                    println!("Signal[{}]: {}", i, s);
+                } else {
+                    println!("Signal[{}]: None", i);
+                }
+            }
         }
     }
     println!("OK {}", args.cvm_file);
 }
 
-fn compile<T>(tree: &ast::AST)
+fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
+    for t in templates.iter() {
+        println!("[begin]Template: {}", t.name);
+        let mut ip: usize = 0;
+        while ip < t.code.len() {
+            ip = disassemble_instruction::<T>(&t.code, ip, &t.name);
+        }
+        println!("[end]")
+    }
+}
+
+fn compile<T>(tree: &ast::AST) -> Result<Circuit, Box<dyn Error>>
 where
     T: FieldOps {
 
+    let mut templates = Vec::new();
+
     for t in tree.templates.iter() {
         let compiled_template = compile_template::<T>(t);
-        println!("Template: {}", t.name);
-        println!("Compiled code len: {}", compiled_template.code.len());
+        templates.push(compiled_template);
+        // println!("Template: {}", t.name);
+        // println!("Compiled code len: {}", compiled_template.code.len());
     }
+
+    let mut main_template_id = None;
+    for (i, t) in templates.iter().enumerate() {
+        if t.name == tree.start {
+            main_template_id = Some(i)
+        }
+    }
+
+    let main_template_id = main_template_id
+        .ok_or(CompilationError::MainTemplateIDNotFound)?;
+
+    Ok(Circuit {
+        main_template_id,
+        templates
+    })
 }
 
 struct TemplateCompilationContext {
@@ -116,7 +169,7 @@ where
 
     match operand {
         ast::FfOperand::Literal(v) => {
-            ctx.code.push(OpCode::PushI64 as u8);
+            ctx.code.push(OpCode::PushFf as u8);
             let x = T::from_le_bytes(v.to_le_bytes().as_slice()).unwrap();
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
         }
@@ -202,15 +255,61 @@ where
     vm2::Template {
         name: t.name.clone(),
         code: ctx.code,
+        vars_i64_num: ctx.i64_variable_indexes.len(),
+        vars_ff_num: ctx.ff_variable_indexes.len(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use circom_witnesscalc::ast::{Assignment, Expr, FfOperand, I64Operand, TemplateInstruction};
     use super::*;
 
     #[test]
     fn test_example() {
         assert!(true);
+    }
+
+    #[test]
+    fn test_compile_template() {
+        let ast_tmpl = ast::Template {
+            name: "Multiplier_0".to_string(),
+            outputs: vec![],
+            inputs: vec![],
+            signals_num: 0,
+            components: vec![],
+            body: vec![
+                TemplateInstruction::Assignment(
+                    Assignment{
+                        dest: "x_0".to_string(),
+                        value: Expr::GetSignal(I64Operand::Literal(1)),
+                    }
+                ),
+                TemplateInstruction::Assignment(
+                    Assignment{
+                        dest: "x_1".to_string(),
+                        value: Expr::GetSignal(I64Operand::Literal(2)),
+                    }
+                ),
+                TemplateInstruction::Assignment(
+                    Assignment{
+                        dest: "x_2".to_string(),
+                        value: Expr::FfMul(
+                            FfOperand::Variable("x_0".to_string()),
+                            FfOperand::Variable("x_1".to_string()))}),
+                TemplateInstruction::Assignment(
+                    Assignment{
+                        dest: "x_3".to_string(),
+                        value: Expr::FfAdd(
+                            FfOperand::Variable("x_2".to_string()),
+                            FfOperand::Literal(BigUint::from(2u32)))}),
+                TemplateInstruction::Statement(
+                    Statement::SetSignal {
+                        idx: I64Operand::Literal(0),
+                        value: FfOperand::Variable("x_3".to_string())})
+            ],
+        };
+        let vm_tmpl = compile_template::<U254>(&ast_tmpl);
+        disassemble::<U254>(&vec![vm_tmpl]);
     }
 }

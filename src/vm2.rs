@@ -1,5 +1,4 @@
 use std::error::Error;
-use thiserror::__private::AsDynError;
 use crate::field::FieldOps;
 
 #[repr(u8)]
@@ -25,9 +24,16 @@ pub enum OpCode {
     OpAdd           = 9,
 }
 
+pub struct Circuit {
+    pub main_template_id: usize,
+    pub templates: Vec<Template>,
+}
+
 pub struct Template {
     pub name: String,
     pub code: Vec<u8>,
+    pub vars_i64_num: usize,
+    pub vars_ff_num: usize,
 }
 
 fn read_instruction(code: &[u8], ip: usize) -> OpCode {
@@ -114,6 +120,62 @@ fn usize_from_code(
     Ok((v, ip+8))
 }
 
+pub fn disassemble_instruction<T>(
+    code: &[u8], ip: usize, name: &str) -> usize
+where
+    T: FieldOps {
+
+    let op_code = read_instruction(code, ip);
+    let mut ip = ip + 1usize;
+
+    print!("{:08x} [{:10}] ", ip, name);
+
+    match op_code {
+        OpCode::NoOp => {
+            println!("NoOp");
+        }
+        OpCode::LoadSignal => {
+            println!("LoadSignal");
+        }
+        OpCode::StoreSignal => {
+            println!("StoreSignal");
+        }
+        OpCode::PushI64 => {
+            let v = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+            ip += size_of::<i64>();
+            println!("PushI64: {}", v);
+        }
+        OpCode::PushFf => {
+            let s = &code[ip..ip+T::BYTES];
+            ip += T::BYTES;
+            let v = T::from_le_bytes(s).unwrap();
+            println!("PushFf: {}", v);
+        }
+        OpCode::StoreVariableFf => {
+            let var_idx: usize;
+            (var_idx, ip) = usize_from_code(code, ip).unwrap();
+            println!("StoreVariableFf: {}", var_idx);
+        }
+        OpCode::LoadVariableI64 => {
+            todo!();
+            println!("LoadVariableI64");
+        }
+        OpCode::LoadVariableFf => {
+            let var_idx: usize;
+            (var_idx, ip) = usize_from_code(code, ip).unwrap();
+            println!("LoadVariableFf: {}", var_idx);
+        }
+        OpCode::OpMul => {
+            println!("OpMul");
+        }
+        OpCode::OpAdd => {
+            println!("OpAdd");
+        }
+    }
+
+    ip
+}
+
 pub fn execute<T>(
     templates: &[Template], signals: &mut [Option<T>],
     main_template_id: usize) -> Result<(), Box<dyn Error>>
@@ -122,11 +184,19 @@ where
 
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
+    vm.stack_ff.resize_with(
+        templates[main_template_id].vars_ff_num, || None);
+    vm.stack_i64.resize_with(
+        templates[main_template_id].vars_i64_num, || None);
+    let template_signals_start = 1usize;
 
     'label: loop {
         if ip == templates[main_template_id].code.len() {
             break 'label;
         }
+
+        disassemble_instruction::<T>(&templates[main_template_id].code, ip,
+            &templates[main_template_id].name);
 
         let op_code = read_instruction(
             &templates[main_template_id].code, ip);
@@ -135,7 +205,7 @@ where
         match op_code {
             OpCode::NoOp => (),
             OpCode::LoadSignal => {
-                let signal_idx = vm.pop_usize()?;
+                let signal_idx = template_signals_start + vm.pop_usize()?;
                 let s = signals.get(signal_idx)
                     .ok_or_else(|| RuntimeError::SignalIndexOutOfBounds)?
                     .ok_or_else(|| RuntimeError::SignalIsNotSet)?;
@@ -143,7 +213,7 @@ where
                 vm.push_ff(s);
             }
             OpCode::StoreSignal => {
-                let signal_idx = vm.pop_usize()?;
+                let signal_idx = template_signals_start + vm.pop_usize()?;
                 if signal_idx >= signals.len() {
                     return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
                 }
