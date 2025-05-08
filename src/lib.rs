@@ -6,9 +6,10 @@ pub mod field;
 pub mod graph;
 pub mod storage;
 pub mod vm;
+pub mod vm2;
 pub mod ast;
 
-mod parser;
+pub mod parser;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};

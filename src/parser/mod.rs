@@ -367,7 +367,7 @@ fn parse_template(i: &mut &str) -> ModalResult<Template> {
     }}.parse_next(i)
 }
 
-fn parse_ast(i: &mut &str) -> ModalResult<AST> {
+pub fn parse_ast(i: &mut &str) -> ModalResult<AST> {
     seq!{AST{
         _: repeat(0.., parse_empty_line),
         prime: parse_prime
