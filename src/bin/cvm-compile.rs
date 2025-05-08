@@ -174,7 +174,7 @@ where
     match inst {
         ast::TemplateInstruction::Assignment(assignment) => {
             expression::<T>(ctx, &assignment.value);
-            ctx.code.push(OpCode::StoreVariable as u8);
+            ctx.code.push(OpCode::StoreVariableFf as u8);
             let var_idx = ctx.get_ff_variable_index(&assignment.dest);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }

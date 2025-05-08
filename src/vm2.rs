@@ -18,7 +18,7 @@ pub enum OpCode {
     // Set variables from the stack
     // arguments:      offset from the base pointer
     // required stack: values to store equal to variables number from arguments
-    StoreVariable   = 5,
+    StoreVariableFf = 5,
     LoadVariableI64 = 6,
     LoadVariableFf  = 7,
     OpMul           = 8,
@@ -38,6 +38,8 @@ fn read_instruction(code: &[u8], ip: usize) -> OpCode {
 pub enum RuntimeError {
     #[error("Stack is empty")]
     StackUnderflow,
+    #[error("Stack is not large enough")]
+    StackOverflow,
     #[error("Value on the stack is None")]
     StackVariableIsNotSet,
     #[error("Failed to convert from i32 to usize")]
@@ -48,11 +50,15 @@ pub enum RuntimeError {
     SignalIsNotSet,
     #[error("Signal is already set")]
     SignalIsAlreadySet,
+    #[error("Code index is out of bounds")]
+    CodeIndexOutOfBounds,
 }
 
 struct VM<T: FieldOps> {
     stack_ff: Vec<Option<T>>,
     stack_i64: Vec<Option<i64>>,
+    base_pointer_ff: usize,
+    base_pointer_i64: usize,
 }
 
 impl<T: FieldOps> VM<T> {
@@ -60,6 +66,8 @@ impl<T: FieldOps> VM<T> {
         Self {
             stack_ff: Vec::new(),
             stack_i64: Vec::new(),
+            base_pointer_ff: 0,
+            base_pointer_i64: 0,
         }
     }
 
@@ -87,6 +95,23 @@ impl<T: FieldOps> VM<T> {
             .try_into()
             .map_err(|_| RuntimeError::I32ToUsizeConversion)
     }
+}
+
+// Converts 8 bytes from the code to i64 and then to usize. Returns error
+// if the code length is too short or if i64 < 0 or if i64 is too big to fit
+// into usize.
+fn usize_from_code(
+    code: &[u8], ip: usize) -> Result<(usize, usize), RuntimeError> {
+
+    let slice = code.get(ip..ip+size_of::<u64>())
+        .ok_or(RuntimeError::CodeIndexOutOfBounds)?;
+    let bytes: [u8; 8] = slice.try_into()
+        .map_err(|_| RuntimeError::I32ToUsizeConversion)?;
+    let v = i64::from_le_bytes(bytes);
+    let v: usize = v.try_into()
+        .map_err(|_| RuntimeError::I32ToUsizeConversion)?;
+
+    Ok((v, ip+8))
 }
 
 pub fn execute<T>(
@@ -140,23 +165,55 @@ where
                 let v = T::from_le_bytes(s)?;
                 vm.push_ff(v);
             }
-            OpCode::StoreVariable => {
-                todo!();
+            OpCode::StoreVariableFf => {
+                let var_idx: usize;
+                (var_idx, ip) = usize_from_code(
+                    &templates[main_template_id].code, ip)?;
+                let value = vm.pop_ff()?;
+                vm.stack_ff[vm.base_pointer_ff + var_idx] = Some(value);
             }
             OpCode::LoadVariableI64 => {
                 todo!();
             }
             OpCode::LoadVariableFf => {
-                todo!();
+                let var_idx: usize;
+                (var_idx, ip) = usize_from_code(
+                    &templates[main_template_id].code, ip)?;
+                let var = match vm.stack_ff.get(vm.base_pointer_ff + var_idx) {
+                    Some(v) => v,
+                    None => return Err(Box::new(RuntimeError::StackOverflow)),
+                };
+                let var = match var {
+                    Some(v) => v,
+                    None => return Err(Box::new(RuntimeError::StackVariableIsNotSet)),
+                };
+                vm.push_ff(*var);
             }
             OpCode::OpMul => {
-                todo!();
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(lhs.mul(rhs));
             }
             OpCode::OpAdd => {
-                todo!();
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(lhs.add(rhs));
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ok() {
+        let x: &[u8] = &[1, 2, 3];
+        let x2 = x.get(2..4);
+
+        println!("{:?}", x2);
+    }
 }
