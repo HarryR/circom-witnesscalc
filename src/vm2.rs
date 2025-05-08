@@ -1,3 +1,5 @@
+use std::error::Error;
+use thiserror::__private::AsDynError;
 use crate::field::FieldOps;
 
 #[repr(u8)]
@@ -12,7 +14,7 @@ pub enum OpCode {
     // stack_i64 contains the signal index
     StoreSignal     = 2,
     PushI64         = 3, // Push i64 value to the stack
-    PushFf          = 4, // Push i64 value to the stack
+    PushFf          = 4, // Push ff value to the stack
     // Set variables from the stack
     // arguments:      offset from the base pointer
     // required stack: values to store equal to variables number from arguments
@@ -32,12 +34,19 @@ fn read_instruction(code: &[u8], ip: usize) -> OpCode {
     unsafe { std::mem::transmute::<u8, OpCode>(code[ip]) }
 }
 
+#[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
+    #[error("Stack is empty")]
     StackUnderflow,
+    #[error("Value on the stack is None")]
     StackVariableIsNotSet,
+    #[error("Failed to convert from i32 to usize")]
     I32ToUsizeConversion,
+    #[error("Signal index is out of bounds")]
     SignalIndexOutOfBounds,
+    #[error("Signal is not set")]
     SignalIsNotSet,
+    #[error("Signal is already set")]
     SignalIsAlreadySet,
 }
 
@@ -54,8 +63,8 @@ impl<T: FieldOps> VM<T> {
         }
     }
 
-    fn push_ff(&mut self, value: Option<T>) {
-        self.stack_ff.push(value);
+    fn push_ff(&mut self, value: T) {
+        self.stack_ff.push(Some(value));
     }
 
     fn pop_ff(&mut self) -> Result<T, RuntimeError> {
@@ -63,8 +72,8 @@ impl<T: FieldOps> VM<T> {
             .ok_or(RuntimeError::StackVariableIsNotSet)
     }
 
-    fn push_i64(&mut self, value: Option<i64>) {
-        self.stack_i64.push(value);
+    fn push_i64(&mut self, value: i64) {
+        self.stack_i64.push(Some(value));
     }
 
     fn pop_i64(&mut self) -> Result<i64, RuntimeError> {
@@ -82,7 +91,7 @@ impl<T: FieldOps> VM<T> {
 
 pub fn execute<T>(
     templates: &[Template], signals: &mut [Option<T>],
-    main_template_id: usize) -> Result<(), RuntimeError>
+    main_template_id: usize) -> Result<(), Box<dyn Error>>
 where
     T: FieldOps {
 
@@ -94,7 +103,8 @@ where
             break 'label;
         }
 
-        let op_code = read_instruction(&templates[main_template_id].code, ip);
+        let op_code = read_instruction(
+            &templates[main_template_id].code, ip);
         ip += 1;
 
         match op_code {
@@ -105,23 +115,30 @@ where
                     .ok_or_else(|| RuntimeError::SignalIndexOutOfBounds)?
                     .ok_or_else(|| RuntimeError::SignalIsNotSet)?;
 
-                vm.push_ff(Some(s));
+                vm.push_ff(s);
             }
             OpCode::StoreSignal => {
                 let signal_idx = vm.pop_usize()?;
                 if signal_idx >= signals.len() {
-                    return Err(RuntimeError::SignalIndexOutOfBounds);
+                    return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
                 }
                 if signals[signal_idx].is_some() {
-                    return Err(RuntimeError::SignalIsAlreadySet);
+                    return Err(Box::new(RuntimeError::SignalIsAlreadySet));
                 }
                 signals[signal_idx] = Some(vm.pop_ff()?);
             }
             OpCode::PushI64 => {
-                todo!();
+                vm.push_i64(
+                    i64::from_le_bytes(
+                        (&templates[main_template_id].code[ip..ip+8])
+                            .try_into().unwrap()));
+                ip += 8;
             }
             OpCode::PushFf => {
-                todo!();
+                let s = &templates[main_template_id].code[ip..ip+T::BYTES];
+                ip += T::BYTES;
+                let v = T::from_le_bytes(s)?;
+                vm.push_ff(v);
             }
             OpCode::StoreVariable => {
                 todo!();

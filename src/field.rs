@@ -170,6 +170,7 @@ impl TryFrom<usize> for U64 {
 
 impl FieldOps for U64 {
     const BITS: usize = 64;
+    const BYTES: usize = 8;
     const MAX: U64 = U64(u64::MAX);
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -264,6 +265,7 @@ pub type U254 = ruint::Uint<254, 4>;
 impl FieldOps for U254 {
 
     const BITS: usize = 254;
+    const BYTES: usize = 32;
     const MAX: U254 = U254::MAX;
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -318,6 +320,7 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
     + Eq + Hash + TryFrom<usize> + Display {
 
     const BITS: usize;
+    const BYTES: usize;
     const MAX: Self;
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>>;
