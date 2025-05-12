@@ -1,11 +1,14 @@
 use std::{env, fs};
 use std::collections::HashMap;
 use std::error::Error;
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
 use num_bigint::BigUint;
-use num_traits::{Num, One, ToBytes};
+use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
-use circom_witnesscalc::ast::{Literal, Statement, AST};
+use circom_witnesscalc::ast::{Statement};
 use circom_witnesscalc::field::{FieldOps, U254};
 use circom_witnesscalc::parser::parse_ast;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
@@ -13,6 +16,7 @@ use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode}
 struct Args {
     cvm_file: String,
     output_file: String,
+    wtns_file: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -23,13 +27,12 @@ enum CompilationError {
     WitnessSignalIndexOutOfBounds,
     #[error("witness signal is not set")]
     WitnessSignalNotSet,
-    #[error("unsupported field size")]
-    UnsupportedFieldSize
 }
 
 fn parse_args() -> Args {
     let mut cvm_file: Option<String> = None;
     let mut output_file: Option<String> = None;
+    let mut wtns_file: Option<String> = None;
 
     let args: Vec<String> = env::args().collect();
 
@@ -48,6 +51,7 @@ fn parse_args() -> Args {
         eprintln!();
         eprintln!("OPTIONS:");
         eprintln!("    -h | --help                Display this help message");
+        eprintln!("    --wtns                      If file is provided, the witness will be calculated and saved in this file");
         let exit_code = if !err_msg.is_empty() { 1i32 } else { 0i32 };
         std::process::exit(exit_code);
     };
@@ -56,6 +60,15 @@ fn parse_args() -> Args {
     while i < args.len() {
         if args[i] == "--help" || args[i] == "-h" {
             usage("");
+        } else if args[i] == "--wtns" {
+            i += 1;
+            if i >= args.len() {
+                usage("missing argument for --wtns");
+            }
+            if wtns_file.is_some() {
+                usage("multiple witness files");
+            }
+            wtns_file = Some(args[i].clone());
         } else if args[i].starts_with("-") {
             usage(format!("Unknown option: {}", args[i]).as_str());
         } else if cvm_file.is_none() {
@@ -68,6 +81,7 @@ fn parse_args() -> Args {
     Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file"); String::new() }),
         output_file: output_file.unwrap_or_else(|| { usage("missing output file"); String::new() }),
+        wtns_file,
     }
 }
 
@@ -77,31 +91,44 @@ fn main() {
     let program_text = fs::read_to_string(&args.cvm_file).unwrap();
     let program = parse_ast(&mut(program_text.as_str())).unwrap();
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
-    match &program.prime {
-        bn254 => {
-            let x = <U254 as One>::one();
-            let circuit = compile::<U254>(&program).unwrap();
-            disassemble::<U254>(&circuit.templates);
-
-            // TODO remove this
-            let mut signals: Vec<Option<U254>> = vec![
-                Some(U254::one()),
-                None,
-                Some(U254::from_str_radix("3", 10).unwrap()),
-                Some(U254::from_str_radix("4", 10).unwrap())
-            ];
-            execute(&circuit.templates, &mut signals, circuit.main_template_id).unwrap();
-            witness(&signals, &program.witness, circuit.prime).unwrap();
-            for (i, s) in signals.iter().enumerate() {
-                if let Some(s) = s {
-                    println!("Signal[{}]: {}", i, s);
-                } else {
-                    println!("Signal[{}]: None", i);
-                }
-            }
+    if program.prime == bn254 {
+        let circuit = compile::<U254>(&program).unwrap();
+        disassemble::<U254>(&circuit.templates);
+        if args.wtns_file.is_some() {
+            calculate_witness(&circuit, args.wtns_file.unwrap()).unwrap();
         }
+    } else {
+        eprintln!("ERROR: Unsupported prime field");
+        std::process::exit(1);
     }
-    println!("OK {}", args.cvm_file);
+
+    println!(
+        "OK, output is supposed to be saved in {}, but it is not implemented yet.",
+        args.output_file);
+}
+
+fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, wtns_file: String) -> Result<(), Box<dyn Error>> {
+    let mut signals: Vec<Option<T>> = vec![
+        Some(T::one()),
+        None,
+        Some(T::from_str("3").unwrap()),
+        Some(T::from_str("4").unwrap())
+    ];
+    execute(&circuit.templates, &mut signals, circuit.main_template_id)?;
+    let wtns_data = witness::<T>(&signals, &circuit.witness, circuit.prime)?;
+    // for (i, s) in signals.iter().enumerate() {
+    //     if let Some(s) = s {
+    //         println!("Signal[{}]: {}", i, s);
+    //     } else {
+    //         println!("Signal[{}]: None", i);
+    //     }
+    // }
+
+    let mut file = File::create(Path::new(&wtns_file))?;
+    file.write_all(&wtns_data)?;
+    file.flush()?;
+    println!("Witness saved to {}", wtns_file);
+    Ok(())
 }
 
 fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime: T) -> Result<Vec<u8>, CompilationError> {
@@ -186,6 +213,7 @@ where
         main_template_id,
         templates,
         prime,
+        witness: tree.witness.clone(),
     })
 }
 

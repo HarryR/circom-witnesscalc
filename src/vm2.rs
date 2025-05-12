@@ -28,6 +28,7 @@ pub struct Circuit<T: FieldOps> {
     pub main_template_id: usize,
     pub templates: Vec<Template>,
     pub prime: T,
+    pub witness: Vec<usize>,
 }
 
 pub struct Template {
@@ -65,7 +66,7 @@ struct VM<T: FieldOps> {
     stack_ff: Vec<Option<T>>,
     stack_i64: Vec<Option<i64>>,
     base_pointer_ff: usize,
-    base_pointer_i64: usize,
+    // base_pointer_i64: usize,
 }
 
 impl<T: FieldOps> VM<T> {
@@ -74,7 +75,7 @@ impl<T: FieldOps> VM<T> {
             stack_ff: Vec::new(),
             stack_i64: Vec::new(),
             base_pointer_ff: 0,
-            base_pointer_i64: 0,
+            // base_pointer_i64: 0,
         }
     }
 
@@ -158,8 +159,8 @@ where
             println!("StoreVariableFf: {}", var_idx);
         }
         OpCode::LoadVariableI64 => {
-            todo!();
             println!("LoadVariableI64");
+            todo!();
         }
         OpCode::LoadVariableFf => {
             let var_idx: usize;

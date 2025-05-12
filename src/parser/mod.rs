@@ -1,6 +1,6 @@
 use num_bigint::BigUint;
 use winnow::ascii::{digit1, space0, space1, line_ending, alpha1};
-use winnow::error::{AddContext, ContextError, ErrMode, ParserError, StrContext, StrContextValue};
+use winnow::error::{ContextError, ErrMode, ParserError, StrContext, StrContextValue};
 use winnow::{ModalResult};
 use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail, opt, cut_err, trace, eof, delimited};
 use winnow::Parser;
@@ -369,25 +369,25 @@ fn parse_template(i: &mut &str) -> ModalResult<Template> {
 
 pub fn parse_ast(i: &mut &str) -> ModalResult<AST> {
     seq!{AST{
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         prime: parse_prime
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%prime"))),
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         signals: parse_signals_num
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%signals"))),
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         components_heap: parse_components_heap
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%components_heap"))),
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         start: parse_start_template
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%start"))),
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         components_mode: parse_components_creation_mode
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%components"))),
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         witness: parse_witness_list
             .context(StrContext::Expected(StrContextValue::StringLiteral("%%witness"))),
-        _: repeat(0.., parse_empty_line),
+        _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         templates: repeat(1.., parse_template),
     }}.parse_next(i)
 }
