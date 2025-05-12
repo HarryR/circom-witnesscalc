@@ -2,7 +2,7 @@ use std::{env, fs};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
@@ -17,6 +17,7 @@ struct Args {
     cvm_file: String,
     output_file: String,
     wtns_file: Option<String>,
+    sym_file: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -27,12 +28,15 @@ enum CompilationError {
     WitnessSignalIndexOutOfBounds,
     #[error("witness signal is not set")]
     WitnessSignalNotSet,
+    #[error("incorrect SYM file format: `{0}`")]
+    IncorrectSymFileFormat(String),
 }
 
 fn parse_args() -> Args {
     let mut cvm_file: Option<String> = None;
     let mut output_file: Option<String> = None;
     let mut wtns_file: Option<String> = None;
+    let mut sym_file: Option<String> = None;
 
     let args: Vec<String> = env::args().collect();
 
@@ -43,10 +47,11 @@ fn parse_args() -> Args {
             eprintln!();
         }
         eprintln!("USAGE:");
-        eprintln!("    {} <cvm_file> <output_path> [OPTIONS]", args[0]);
+        eprintln!("    {} <cvm_file> <sym_file> <output_path> [OPTIONS]", args[0]);
         eprintln!();
         eprintln!("ARGUMENTS:");
         eprintln!("    <cvm_file>    Path to the CVM file with compiled circuit");
+        eprintln!("    <sym_file>    Path to the SYM file with signals description");
         eprintln!("    <output_path> File where the witness will be saved");
         eprintln!();
         eprintln!("OPTIONS:");
@@ -73,6 +78,8 @@ fn parse_args() -> Args {
             usage(format!("Unknown option: {}", args[i]).as_str());
         } else if cvm_file.is_none() {
             cvm_file = Some(args[i].clone());
+        } else if sym_file.is_none() {
+            sym_file = Some(args[i].clone());
         } else if output_file.is_none() {
             output_file = Some(args[i].clone());
         }
@@ -82,6 +89,7 @@ fn parse_args() -> Args {
         cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file"); String::new() }),
         output_file: output_file.unwrap_or_else(|| { usage("missing output file"); String::new() }),
         wtns_file,
+        sym_file: sym_file.unwrap_or_else(|| { usage("missing SYM file"); String::new() }),
     }
 }
 
@@ -92,7 +100,7 @@ fn main() {
     let program = parse_ast(&mut(program_text.as_str())).unwrap();
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
-        let circuit = compile::<U254>(&program).unwrap();
+        let circuit = compile::<U254>(&program, &args.sym_file).unwrap();
         disassemble::<U254>(&circuit.templates);
         if args.wtns_file.is_some() {
             calculate_witness(&circuit, args.wtns_file.unwrap()).unwrap();
@@ -105,6 +113,39 @@ fn main() {
     println!(
         "OK, output is supposed to be saved in {}, but it is not implemented yet.",
         args.output_file);
+}
+
+fn input_signals_info(
+    sym_file: &str,
+    main_template_id: usize) -> Result<HashMap<String, usize>, Box<dyn Error>> {
+
+    let mut m: HashMap<String, usize> = HashMap::new();
+    let file = File::open(Path::new(sym_file))?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines() {
+        let line = line?;
+        let values: Vec<&str> = line.split(',').collect();
+        if values.len() != 4 {
+            return Err(Box::new(CompilationError::IncorrectSymFileFormat(
+                format!("line should consist of 4 values: {}", line))));
+        }
+
+        let node_id = values[2].parse::<usize>()
+            .map_err(|e| Box::new(
+                CompilationError::IncorrectSymFileFormat(
+                    format!("node_id should be a number: {}", e))))?;
+        if node_id != main_template_id {
+            continue
+        }
+
+        let signal_idx = values[0].parse::<usize>()
+            .map_err(|e| Box::new(
+                CompilationError::IncorrectSymFileFormat(
+                    format!("signal_idx should be a number: {}", e))))?;
+
+        m.insert(values[3].to_string(), signal_idx);
+    }
+    Ok(m)
 }
 
 fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, wtns_file: String) -> Result<(), Box<dyn Error>> {
@@ -184,7 +225,8 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
     }
 }
 
-fn compile<T>(tree: &ast::AST) -> Result<Circuit<T>, Box<dyn Error>>
+fn compile<T>(
+    tree: &ast::AST, sym_file: &str) -> Result<Circuit<T>, Box<dyn Error>>
 where
     T: FieldOps {
 
@@ -214,6 +256,7 @@ where
         templates,
         prime,
         witness: tree.witness.clone(),
+        input_signals_info: input_signals_info(sym_file, main_template_id)?
     })
 }
 
