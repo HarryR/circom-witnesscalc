@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use ruint::{aliases::U256, uint};
 use ruint::aliases::U128;
 use num_traits::{Zero, One};
+use wtns_file::FieldElement;
 use crate::graph::{Operation, TresOperation, UnoOperation};
 
 pub const M: U256 =

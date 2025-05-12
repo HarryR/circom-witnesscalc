@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use num_bigint::BigUint;
 use num_traits::{Num, One, ToBytes};
-use circom_witnesscalc::{ast, vm2};
+use wtns_file::FieldElement;
+use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Literal, Statement, AST};
 use circom_witnesscalc::field::{FieldOps, U254};
 use circom_witnesscalc::parser::parse_ast;
@@ -18,6 +19,12 @@ struct Args {
 enum CompilationError {
     #[error("Main template ID is not found")]
     MainTemplateIDNotFound,
+    #[error("witness signal index is out of bounds")]
+    WitnessSignalIndexOutOfBounds,
+    #[error("witness signal is not set")]
+    WitnessSignalNotSet,
+    #[error("unsupported field size")]
+    UnsupportedFieldSize
 }
 
 fn parse_args() -> Args {
@@ -84,6 +91,7 @@ fn main() {
                 Some(U254::from_str_radix("4", 10).unwrap())
             ];
             execute(&circuit.templates, &mut signals, circuit.main_template_id).unwrap();
+            witness(&signals, &program.witness, circuit.prime).unwrap();
             for (i, s) in signals.iter().enumerate() {
                 if let Some(s) = s {
                     println!("Signal[{}]: {}", i, s);
@@ -94,6 +102,48 @@ fn main() {
         }
     }
     println!("OK {}", args.cvm_file);
+}
+
+fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime: T) -> Result<Vec<u8>, CompilationError> {
+    let mut result = Vec::with_capacity(witness_signals.len());
+
+    for &idx in witness_signals {
+        if idx >= signals.len() {
+            return Err(CompilationError::WitnessSignalIndexOutOfBounds)
+        }
+
+        match signals[idx] {
+            Some(s) => result.push(s),
+            None => return Err(CompilationError::WitnessSignalNotSet)
+        }
+    }
+
+    match T::BYTES {
+        8 => {
+            let vec_witness: Vec<FieldElement<8>> = result
+                .iter()
+                .map(|a| {
+                    let a: [u8; 8] = a.to_le_bytes().try_into().unwrap();
+                    a.into()
+                })
+                .collect();
+            Ok(wtns_from_witness2(vec_witness, prime))
+        }
+        32 => {
+            let vec_witness: Vec<FieldElement<32>> = result
+                .iter()
+                .map(|a| {
+                    let a: [u8; 32] = a.to_le_bytes().try_into().unwrap();
+                    a.into()
+                })
+                .collect();
+            Ok(wtns_from_witness2(vec_witness, prime))
+        }
+        _ => {
+            Err(CompilationError::WitnessSignalNotSet)
+        }
+    }
+
 }
 
 fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
@@ -107,7 +157,7 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
     }
 }
 
-fn compile<T>(tree: &ast::AST) -> Result<Circuit, Box<dyn Error>>
+fn compile<T>(tree: &ast::AST) -> Result<Circuit<T>, Box<dyn Error>>
 where
     T: FieldOps {
 
@@ -130,9 +180,12 @@ where
     let main_template_id = main_template_id
         .ok_or(CompilationError::MainTemplateIDNotFound)?;
 
+    let prime = T::from_le_bytes(&tree.prime.to_le_bytes())?;
+
     Ok(Circuit {
         main_template_id,
-        templates
+        templates,
+        prime,
     })
 }
 

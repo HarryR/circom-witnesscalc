@@ -24,9 +24,10 @@ pub enum OpCode {
     OpAdd           = 9,
 }
 
-pub struct Circuit {
+pub struct Circuit<T: FieldOps> {
     pub main_template_id: usize,
     pub templates: Vec<Template>,
+    pub prime: T,
 }
 
 pub struct Template {

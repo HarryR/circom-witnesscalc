@@ -139,7 +139,7 @@ fn wtns_from_witness(witness: Vec<FieldElement<32>>) -> Vec<u8> {
     buf
 }
 
-fn wtns_from_witness2<const FS: usize, T: FieldOps>(
+pub fn wtns_from_witness2<const FS: usize, T: FieldOps>(
     witness: Vec<FieldElement<FS>>, prime: T) -> Vec<u8> {
 
     let mut buf = Vec::new();
