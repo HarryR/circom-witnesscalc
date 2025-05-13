@@ -262,6 +262,8 @@ impl FieldOps for U64 {
 
 pub type U254 = ruint::Uint<254, 4>;
 
+pub const bn254_prime: U254 = uint!(21888242871839275222246405745257275088548364400416034343698204186575808495617_U254);
+
 impl FieldOps for U254 {
 
     const BITS: usize = 254;
@@ -337,7 +339,7 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
 }
 
 pub trait FieldOperations {
-    type Type;
+    type Type: FieldOps;
 
     fn parse_str(&self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>>;
     fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error>>;
@@ -411,13 +413,25 @@ impl<T: FieldOps> Field<T> {
 impl<T: FieldOps> FieldOperations for &Field<T> {
     type Type = T;
 
-    fn parse_str(&self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>> {
-        let v = T::from_str(v)?;
-        if v > self.prime {
-            Ok(v % self.prime)
+    fn parse_str(
+        &self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>> {
+
+        let (v, neg) = if let Some('-') = v.chars().nth(0) {
+            (&v[1..], true)
         } else {
-            Ok(v)
+            (v, false)
+        };
+
+        let mut v = T::from_str(v)?;
+        if v >= self.prime {
+            v = v % self.prime;
         }
+
+        if neg {
+            v = self.sub(Self::Type::zero(), v);
+        }
+
+        Ok(v)
     }
 
     fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error>> {
@@ -730,7 +744,7 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::field::{Field, U64, FieldOperations, U254, FieldOps};
+    use crate::field::{Field, U64, FieldOperations, U254, FieldOps, bn254_prime};
     use num_traits::One;
     use ruint::aliases::U256;
 
@@ -1306,5 +1320,25 @@ mod tests {
         let bs = [1u8];
         let x = <U254 as FieldOps>::from_le_bytes(&bs).unwrap();
         assert_eq!(x, U254::one());
+    }
+
+    #[test]
+    fn test_field_parse_str() {
+        let ff = Field::new(bn254_prime);
+
+        let x = (&ff).parse_str("3").unwrap();
+        assert_eq!(x, U254::from_str("3").unwrap());
+
+        let x = (&ff).parse_str("21888242871839275222246405745257275088548364400416034343698204186575808495617").unwrap();
+        assert_eq!(x, U254::from_str("0").unwrap());
+
+        let x = (&ff).parse_str("21888242871839275222246405745257275088548364400416034343698204186575808495618").unwrap();
+        assert_eq!(x, U254::from_str("1").unwrap());
+
+        let x = (&ff).parse_str("-1").unwrap();
+        assert_eq!(x, U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495616").unwrap());
+
+        let x = (&ff).parse_str("-2").unwrap();
+        assert_eq!(x, U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495615").unwrap());
     }
 }

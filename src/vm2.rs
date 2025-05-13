@@ -30,7 +30,8 @@ pub struct Circuit<T: FieldOps> {
     pub templates: Vec<Template>,
     pub prime: T,
     pub witness: Vec<usize>,
-    pub input_signals_info: HashMap<String, usize>
+    pub input_signals_info: HashMap<String, usize>,
+    pub signals_num: usize,
 }
 
 pub struct Template {

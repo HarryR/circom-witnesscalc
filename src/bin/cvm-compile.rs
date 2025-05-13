@@ -5,18 +5,23 @@ use std::fs::File;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use num_bigint::BigUint;
-use num_traits::{Num, ToBytes};
+use num_traits::{Num, ToBytes, Zero, One};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Statement};
-use circom_witnesscalc::field::{FieldOps, U254};
+use circom_witnesscalc::field::{FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse_ast;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
+
+struct WantWtns {
+    wtns_file: String,
+    inputs_file: String,
+}
 
 struct Args {
     cvm_file: String,
     output_file: String,
-    wtns_file: Option<String>,
+    want_wtns: Option<WantWtns>,
     sym_file: String,
 }
 
@@ -32,15 +37,22 @@ enum CompilationError {
     IncorrectSymFileFormat(String),
 }
 
+#[derive(Debug, thiserror::Error)]
+enum RuntimeError {
+    #[error("incorrect inputs json file: `{0}`")]
+    InvalidSignalsJson(String)
+}
+
 fn parse_args() -> Args {
     let mut cvm_file: Option<String> = None;
     let mut output_file: Option<String> = None;
     let mut wtns_file: Option<String> = None;
+    let mut inputs_file: Option<String> = None;
     let mut sym_file: Option<String> = None;
 
     let args: Vec<String> = env::args().collect();
 
-    let usage = |err_msg: &str| {
+    let usage = |err_msg: &str| -> ! {
         if !err_msg.is_empty() {
             eprintln!("ERROR:");
             eprintln!("    {}", err_msg);
@@ -55,8 +67,9 @@ fn parse_args() -> Args {
         eprintln!("    <output_path> File where the witness will be saved");
         eprintln!();
         eprintln!("OPTIONS:");
-        eprintln!("    -h | --help                Display this help message");
-        eprintln!("    --wtns                      If file is provided, the witness will be calculated and saved in this file");
+        eprintln!("    -h | --help       Display this help message");
+        eprintln!("    --wtns            If file is provided, the witness will be calculated and saved in this file. Inputs file MUST be provided as well.");
+        eprintln!("    --inputs          File with inputs for the circuit. Required if --wtns is provided.");
         let exit_code = if !err_msg.is_empty() { 1i32 } else { 0i32 };
         std::process::exit(exit_code);
     };
@@ -74,6 +87,15 @@ fn parse_args() -> Args {
                 usage("multiple witness files");
             }
             wtns_file = Some(args[i].clone());
+        } else if args[i] == "--inputs" {
+            i += 1;
+            if i >= args.len() {
+                usage("missing argument for --inputs");
+            }
+            if inputs_file.is_some() {
+                usage("multiple inputs files");
+            }
+            inputs_file = Some(args[i].clone());
         } else if args[i].starts_with("-") {
             usage(format!("Unknown option: {}", args[i]).as_str());
         } else if cvm_file.is_none() {
@@ -85,11 +107,25 @@ fn parse_args() -> Args {
         }
         i += 1;
     }
+
+    let want_wtns: Option<WantWtns> = match (inputs_file, wtns_file) {
+        (Some(inputs_file), Some(wtns_file)) => {
+            Some(WantWtns{ wtns_file, inputs_file })
+        }
+        (None, None) => None,
+        (Some(_), None) => {
+            usage("inputs file is provided, but witness file is not");
+        }
+        (None, Some(_)) => {
+            usage("witness file is provided, but inputs file is not");
+        }
+    };
+
     Args {
-        cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file"); String::new() }),
-        output_file: output_file.unwrap_or_else(|| { usage("missing output file"); String::new() }),
-        wtns_file,
-        sym_file: sym_file.unwrap_or_else(|| { usage("missing SYM file"); String::new() }),
+        cvm_file: cvm_file.unwrap_or_else(|| { usage("missing CVM file") }),
+        output_file: output_file.unwrap_or_else(|| { usage("missing output file") }),
+        want_wtns,
+        sym_file: sym_file.unwrap_or_else(|| { usage("missing SYM file") }),
     }
 }
 
@@ -102,8 +138,8 @@ fn main() {
     if program.prime == bn254 {
         let circuit = compile::<U254>(&program, &args.sym_file).unwrap();
         disassemble::<U254>(&circuit.templates);
-        if args.wtns_file.is_some() {
-            calculate_witness(&circuit, args.wtns_file.unwrap()).unwrap();
+        if args.want_wtns.is_some() {
+            calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -148,7 +184,8 @@ fn input_signals_info(
     Ok(m)
 }
 
-fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, wtns_file: String) -> Result<(), Box<dyn Error>> {
+fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
+    // let v: serde_json::Value = serde_json::from_slice(inputs_data).unwrap();
     let mut signals: Vec<Option<T>> = vec![
         Some(T::one()),
         None,
@@ -165,11 +202,159 @@ fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, wtns_file: String) -> Re
     //     }
     // }
 
-    let mut file = File::create(Path::new(&wtns_file))?;
+    let mut file = File::create(Path::new(&want_wtns.wtns_file))?;
     file.write_all(&wtns_data)?;
     file.flush()?;
-    println!("Witness saved to {}", wtns_file);
+    println!("Witness saved to {}", want_wtns.wtns_file);
     Ok(())
+}
+
+fn parse_signals_json<F: FieldOperations>(
+    inputs_data: &[u8], ff: &F) -> Result<HashMap<String, F::Type>, Box<dyn Error>> {
+
+    let v: serde_json::Value = serde_json::from_slice(inputs_data)?;
+    let mut records: HashMap<String, F::Type> = HashMap::new();
+    visit_inputs_json::<F>("main", &v, &mut records, ff)?;
+    // for (i, v) in records.iter() {
+    //     println!("{}: {}", i, v);
+    // }
+    Ok(records)
+}
+
+fn visit_inputs_json<F: FieldOperations>(
+    prefix: &str, v: &serde_json::Value, records: &mut HashMap<String, F::Type>,
+    ff: &F) -> Result<(), Box<dyn Error>> {
+
+    match v {
+        serde_json::Value::Null => return Err(Box::new(
+            RuntimeError::InvalidSignalsJson(
+                format!("unexpected null value at path {}", prefix)))),
+        serde_json::Value::Bool(b) => {
+            let b = if *b { F::Type::one() } else { F::Type::zero() };
+            records.insert(prefix.to_string(), b);
+        },
+        serde_json::Value::Number(n) => {
+            let v = if n.is_u64() {
+                let n = n.as_u64().unwrap();
+                ff.parse_le_bytes(n.to_le_bytes().as_slice())?
+            } else if n.is_i64() {
+                let n = n.as_i64().unwrap();
+                ff.parse_str(&n.to_string())?
+            } else {
+                return Err(Box::new(RuntimeError::InvalidSignalsJson(
+                    format!(
+                        "invalid number at path {}: {}",
+                        prefix, n.to_string()))));
+            };
+            records.insert(prefix.to_string(), v);
+        },
+        serde_json::Value::String(s) => {
+            records.insert(prefix.to_string(), ff.parse_str(s)?);
+        },
+        serde_json::Value::Array(vs) => {
+            for (i, v) in vs.iter().enumerate() {
+                let new_prefix = format!("{}[{}]", prefix, i);
+                visit_inputs_json(&new_prefix, v, records, ff)?;
+            }
+        },
+        serde_json::Value::Object(o) => {
+            for (k, v) in o.iter() {
+                let new_prefix = prefix.to_string() + "." + k;
+                visit_inputs_json(&new_prefix, v, records, ff)?;
+            }
+        },
+    };
+
+    Ok(())
+}
+
+fn init_signals<T: FieldOps, F: FieldOperations>(
+    inputs_file: String, signals_num: usize, ff: &F,
+    input_signals_info: HashMap<String, usize>) -> Result<Vec<Option<T>>, Box<dyn Error>> {
+
+    let mut signals = vec![None; signals_num];
+    signals[0] = Some(T::one());
+
+    let inputs_data = fs::read_to_string(&inputs_file)?;
+    let input_signals = parse_signals_json(inputs_data.as_bytes(), ff)?;
+    for (path, value) in input_signals.iter() {
+        match input_signals_info.get(path) {
+            None => {
+                return Err(Box::new(
+                    RuntimeError::InvalidSignalsJson(
+                        format!("signal {} is not found in SYM file", path))))
+            },
+            Some(signal_idx) => todo!()
+        }
+    }
+
+    /*
+    use serde_json::{Value, Map};
+use std::collections::HashMap;
+
+fn flatten_json(value: &Value, prefix: &str, result: &mut HashMap<String, String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                let new_prefix = if prefix.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                flatten_json(val, &new_prefix, result);
+            }
+        },
+        Value::Array(arr) => {
+            for (index, val) in arr.iter().enumerate() {
+                let new_prefix = format!("{}[{}]", prefix, index);
+                flatten_json(val, &new_prefix, result);
+            }
+        },
+        _ => {
+            // Convert any value to a string
+            result.insert(prefix.to_string(), value.to_string().trim_matches('"').to_string());
+        }
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Corrected JSON example
+    let json_str = r#"{
+        "a": ["300", 3, "8432", 3, 2],
+        "inB": "100500",
+        "v": {
+            "v": [
+                {
+                    "start": {"x": 3, "y": 5},
+                    "end": {"x": 6, "y": 7}
+                },
+                {
+                    "start": {"x": 8, "y": 9},
+                    "end": {"x": 10, "y": 11}
+                }
+            ]
+        }
+    }"#;
+    
+    let json_value: Value = serde_json::from_str(json_str)?;
+    let mut flattened = HashMap::new();
+    
+    // Use "main" as the root prefix as shown in your example
+    flatten_json(&json_value, "main", &mut flattened);
+    
+    // Print in sorted order for readability
+    let mut keys: Vec<&String> = flattened.keys().collect();
+    keys.sort();
+    
+    for key in keys {
+        println!("{} => \"{}\"", key, flattened.get(key).unwrap());
+    }
+    
+    Ok(())
+}
+     */
+
+    Ok(signals)
 }
 
 fn witness<T: FieldOps>(signals: &[Option<T>], witness_signals: &[usize], prime: T) -> Result<Vec<u8>, CompilationError> {
@@ -256,7 +441,8 @@ where
         templates,
         prime,
         witness: tree.witness.clone(),
-        input_signals_info: input_signals_info(sym_file, main_template_id)?
+        input_signals_info: input_signals_info(sym_file, main_template_id)?,
+        signals_num: tree.signals,
     })
 }
 
@@ -386,7 +572,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use num_traits::Zero;
     use circom_witnesscalc::ast::{Assignment, Expr, FfOperand, I64Operand, TemplateInstruction};
+    use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
 
     #[test]
@@ -435,5 +623,115 @@ mod tests {
         };
         let vm_tmpl = compile_template::<U254>(&ast_tmpl);
         disassemble::<U254>(&vec![vm_tmpl]);
+    }
+
+    #[test]
+    fn test_parse_signals_json() {
+        let ff = Field::new(bn254_prime);
+
+        // bools
+        let i = r#"
+{
+  "a": true,
+  "b": false,
+  "c": 100500
+}"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let mut want: HashMap<String, U254> = HashMap::new();
+        want.insert("main.a".to_string(), U254::from_str("1").unwrap());
+        want.insert("main.b".to_string(), U254::from_str("0").unwrap());
+        want.insert("main.c".to_string(), U254::from_str("100500").unwrap());
+        assert_eq!(want, result);
+
+        // embedded objects
+        let i = r#"{ "a": { "b": true } }"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let mut want: HashMap<String, U254> = HashMap::new();
+        want.insert("main.a.b".to_string(), U254::from_str("1").unwrap());
+        assert_eq!(want, result);
+
+        // null error
+        let i = r#"{ "a": { "b": null } }"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff);
+        let binding = result.unwrap_err();
+        let err = binding.downcast_ref::<RuntimeError>().unwrap();
+        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "unexpected null value at path main.a.b"));
+
+        // Negative number
+        let i = r#"{ "a": { "b": -4 } }"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let mut want: HashMap<String, U254> = HashMap::new();
+        want.insert("main.a.b".to_string(), U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495613").unwrap());
+        assert_eq!(want, result);
+
+        // Float number error
+        let i = r#"{ "a": { "b": 8.3 } }"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff);
+        let binding = result.unwrap_err();
+        let err = binding.downcast_ref::<RuntimeError>().unwrap();
+        let msg = err.to_string();
+        assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "invalid number at path main.a.b: 8.3"), "{}", msg);
+
+        // string
+        let i = r#"{ "a": { "b": "8" } }"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let mut want: HashMap<String, U254> = HashMap::new();
+        want.insert("main.a.b".to_string(), U254::from_str("8").unwrap());
+        assert_eq!(want, result);
+
+        // array
+        let i = r#"{ "a": { "b": ["8", 2, 3] } }"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let mut want: HashMap<String, U254> = HashMap::new();
+        want.insert("main.a.b[0]".to_string(), U254::from_str("8").unwrap());
+        want.insert("main.a.b[1]".to_string(), U254::from_str("2").unwrap());
+        want.insert("main.a.b[2]".to_string(), U254::from_str("3").unwrap());
+        assert_eq!(want, result);
+
+        // buses and arrays
+        let i = r#"{
+  "a": ["300", 3, "8432", 3, 2],
+  "inB": "100500",
+  "v": {
+    "v": [
+      {
+        "start": {"x": 3, "y": 5},
+        "end": {"x": 6, "y": 7}
+      },
+      {
+        "start": {"x": 8, "y": 9},
+        "end": {"x": 10, "y": 11}
+      }
+    ]
+  }
+}"#;
+        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let mut want: HashMap<String, U254> = HashMap::new();
+        want.insert("main.a[0]".to_string(), U254::from_str("300").unwrap());
+        want.insert("main.a[1]".to_string(), U254::from_str("3").unwrap());
+        want.insert("main.a[2]".to_string(), U254::from_str("8432").unwrap());
+        want.insert("main.a[3]".to_string(), U254::from_str("3").unwrap());
+        want.insert("main.a[4]".to_string(), U254::from_str("2").unwrap());
+        want.insert("main.inB".to_string(), U254::from_str("100500").unwrap());
+        want.insert("main.v.v[0].start.x".to_string(), U254::from_str("3").unwrap());
+        want.insert("main.v.v[0].start.y".to_string(), U254::from_str("5").unwrap());
+        want.insert("main.v.v[0].end.x".to_string(), U254::from_str("6").unwrap());
+        want.insert("main.v.v[0].end.y".to_string(), U254::from_str("7").unwrap());
+        want.insert("main.v.v[1].start.x".to_string(), U254::from_str("8").unwrap());
+        want.insert("main.v.v[1].start.y".to_string(), U254::from_str("9").unwrap());
+        want.insert("main.v.v[1].end.x".to_string(), U254::from_str("10").unwrap());
+        want.insert("main.v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
+        assert_eq!(want, result);
+    }
+
+    #[test]
+    fn negative() {
+        let i: i64 = -1;
+        // let x = <U254 as FieldOps>::from_str("-1").unwrap();
+        let x = <U254 as Zero>::zero();
+        let bn254 = U254::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
+        let f = Field::new(bn254);
+        // <f as FieldOperations>::
+        // println!("{:?}", f);
     }
 }
