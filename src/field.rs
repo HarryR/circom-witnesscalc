@@ -402,10 +402,7 @@ impl<T: FieldOps> Field<T> {
                 Err(_) => None,
             }
         } else {
-            match value.try_into() {
-                Ok(v) => Some(v),
-                Err(_) => None,
-            }
+            value.try_into().ok()
         }
     }
 }

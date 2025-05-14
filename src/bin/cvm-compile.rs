@@ -229,9 +229,7 @@ fn visit_inputs_json<F: FieldOperations>(
                 ff.parse_str(&n.to_string())?
             } else {
                 return Err(Box::new(RuntimeError::InvalidSignalsJson(
-                    format!(
-                        "invalid number at path {}: {}",
-                        prefix, n.to_string()))));
+                    format!("invalid number at path {}: {}", prefix, n))));
             };
             records.insert(prefix.to_string(), v);
         },
@@ -480,7 +478,7 @@ where
 
     let mut ctx = TemplateCompilationContext::new();
     for i in &t.body {
-        instruction::<T>(&mut ctx, &i);
+        instruction::<T>(&mut ctx, i);
     }
 
     vm2::Template {

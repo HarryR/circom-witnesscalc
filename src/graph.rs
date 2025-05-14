@@ -786,15 +786,15 @@ impl<T: FieldOps + 'static, NS: NodesStorage + 'static> NodesInterface for Nodes
             Node::Constant(c_idx) => {
                 let v = self.constants[c_idx];
                 let idx = self.const_node_idx_from_value(v);
-                return NodeIdx(idx);
+                NodeIdx(idx)
             },
             Node::UnoOp(op, a) => {
                 if let Some(Node::Constant(a_idx)) = self.nodes.get(a) {
                     let v = (&self.ff).op_uno(op, self.constants[a_idx]);
                     let idx = self.const_node_idx_from_value(v);
-                    return NodeIdx(idx);
+                    NodeIdx(idx)
                 } else {
-                    return self.push_noopt(n);
+                    self.push_noopt(n)
                 }
             }
             Node::Op(op, a, b) => {
@@ -806,9 +806,9 @@ impl<T: FieldOps + 'static, NS: NodesStorage + 'static> NodesInterface for Nodes
 
                     let v = (&self.ff).op_duo(op, self.constants[a_idx], self.constants[b_idx]);
                     let idx = self.const_node_idx_from_value(v);
-                    return NodeIdx(idx);
+                    NodeIdx(idx)
                 } else {
-                    return self.push_noopt(n);
+                    self.push_noopt(n)
                 }
             }
             Node::TresOp(op, a, b, c) => {
@@ -824,13 +824,13 @@ impl<T: FieldOps + 'static, NS: NodesStorage + 'static> NodesInterface for Nodes
                         op, self.constants[a_idx], self.constants[b_idx],
                         self.constants[c_idx]);
                     let idx = self.const_node_idx_from_value(v);
-                    return NodeIdx(idx);
+                    NodeIdx(idx)
                 } else {
-                    return self.push_noopt(n);
+                    self.push_noopt(n)
                 }
             }
             Node::Input(_) => {
-                return self.push_noopt(n);
+                self.push_noopt(n)
             },
         }
     }
@@ -1248,7 +1248,7 @@ pub fn tree_shake<T: FieldOps + 'static, NS: NodesStorage + 'static>(
 }
 
 fn rnd<T: FieldOps>(ff: &Field<T>, rng: &mut ThreadRng) -> T {
-    let x: usize = (T::BITS + 7) / 8;
+    let x = T::BITS.div_ceil(8);
     let mut bs = vec![0u8; x];
     rng.fill_bytes(&mut bs);
 

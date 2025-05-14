@@ -211,8 +211,8 @@ pub fn execute<F: FieldOperations>(
             OpCode::LoadSignal => {
                 let signal_idx = template_signals_start + vm.pop_usize()?;
                 let s = signals.get(signal_idx)
-                    .ok_or_else(|| RuntimeError::SignalIndexOutOfBounds)?
-                    .ok_or_else(|| RuntimeError::SignalIsNotSet)?;
+                    .ok_or(RuntimeError::SignalIndexOutOfBounds)?
+                    .ok_or(RuntimeError::SignalIsNotSet)?;
 
                 vm.push_ff(s);
             }

@@ -242,7 +242,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
 
 fn parse_expression(input: &mut &str) -> ModalResult<Expr> {
     let x = dispatch! {parse_operator_name;
-        "get_signal" => preceded(space1, parse_i64_operand).map(|op| Expr::GetSignal(op)),
+        "get_signal" => preceded(space1, parse_i64_operand).map(Expr::GetSignal),
         "ff.mul" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
             .map(|(op1, op2)| Expr::FfMul(op1, op2)),
         "ff.add" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
@@ -287,7 +287,7 @@ fn parse_ff_signal(i: &mut &str) -> ModalResult<Signal> {
         return Ok(Signal::Ff(vec![]));
     }
 
-    assert!(sp.len() > 0);
+    assert!(!sp.is_empty());
 
     let dims: Vec<usize> = repeat(
         dims_num..=dims_num, terminated(parse_usize, space0))
@@ -308,7 +308,7 @@ fn parse_opt_usize(i: &mut &str) -> ModalResult<Option<usize>> {
             }
         }
         None => {
-            let val = usize::from_str_radix(digs, 10)
+            let val = digs.parse()
                 .map_err(|_| ErrMode::Cut(ContextError::from_input(i)))?;
             Ok(Some(val))
         }
@@ -333,7 +333,7 @@ fn parse_bus_signal(i: &mut &str) -> ModalResult<Signal> {
         return Ok(Signal::Bus(bus_name, vec![]));
     }
 
-    assert!(sp.len() > 0);
+    assert!(!sp.is_empty());
 
     let dims: Vec<usize> = repeat(
         dims_num..=dims_num, terminated(parse_usize, space0))
