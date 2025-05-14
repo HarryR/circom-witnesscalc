@@ -493,7 +493,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use num_traits::Zero;
     use circom_witnesscalc::ast::{Assignment, Expr, FfOperand, I64Operand, TemplateInstruction};
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
@@ -643,16 +642,5 @@ mod tests {
         want.insert("main.v.v[1].end.x".to_string(), U254::from_str("10").unwrap());
         want.insert("main.v.v[1].end.y".to_string(), U254::from_str("11").unwrap());
         assert_eq!(want, result);
-    }
-
-    #[test]
-    fn negative() {
-        let i: i64 = -1;
-        // let x = <U254 as FieldOps>::from_str("-1").unwrap();
-        let x = <U254 as Zero>::zero();
-        let bn254 = U254::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
-        let f = Field::new(bn254);
-        // <f as FieldOperations>::
-        // println!("{:?}", f);
     }
 }

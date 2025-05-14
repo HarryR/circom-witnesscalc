@@ -282,8 +282,6 @@ pub fn execute<F: FieldOperations>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_ok() {
         let x: &[u8] = &[1, 2, 3];
