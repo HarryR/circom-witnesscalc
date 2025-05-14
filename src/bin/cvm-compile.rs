@@ -9,7 +9,7 @@ use num_traits::{Num, ToBytes, Zero, One};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Statement};
-use circom_witnesscalc::field::{FieldOperations, FieldOps, U254};
+use circom_witnesscalc::field::{Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse_ast;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
 
@@ -185,22 +185,12 @@ fn input_signals_info(
 }
 
 fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
-    // let v: serde_json::Value = serde_json::from_slice(inputs_data).unwrap();
-    let mut signals: Vec<Option<T>> = vec![
-        Some(T::one()),
-        None,
-        Some(T::from_str("3").unwrap()),
-        Some(T::from_str("4").unwrap())
-    ];
-    execute(&circuit.templates, &mut signals, circuit.main_template_id)?;
+    let ff = Field::new(circuit.prime);
+    let mut signals = init_signals(
+        &want_wtns.inputs_file, circuit.signals_num, &&ff,
+        &circuit.input_signals_info)?;
+    execute(&circuit.templates, &mut signals, circuit.main_template_id, &ff)?;
     let wtns_data = witness::<T>(&signals, &circuit.witness, circuit.prime)?;
-    // for (i, s) in signals.iter().enumerate() {
-    //     if let Some(s) = s {
-    //         println!("Signal[{}]: {}", i, s);
-    //     } else {
-    //         println!("Signal[{}]: None", i);
-    //     }
-    // }
 
     let mut file = File::create(Path::new(&want_wtns.wtns_file))?;
     file.write_all(&wtns_data)?;
@@ -215,9 +205,6 @@ fn parse_signals_json<F: FieldOperations>(
     let v: serde_json::Value = serde_json::from_slice(inputs_data)?;
     let mut records: HashMap<String, F::Type> = HashMap::new();
     visit_inputs_json::<F>("main", &v, &mut records, ff)?;
-    // for (i, v) in records.iter() {
-    //     println!("{}: {}", i, v);
-    // }
     Ok(records)
 }
 
@@ -268,14 +255,14 @@ fn visit_inputs_json<F: FieldOperations>(
     Ok(())
 }
 
-fn init_signals<T: FieldOps, F: FieldOperations>(
-    inputs_file: String, signals_num: usize, ff: &F,
-    input_signals_info: HashMap<String, usize>) -> Result<Vec<Option<T>>, Box<dyn Error>> {
+fn init_signals<F: FieldOperations>(
+    inputs_file: &str, signals_num: usize, ff: &F,
+    input_signals_info: &HashMap<String, usize>) -> Result<Vec<Option<F::Type>>, Box<dyn Error>> {
 
     let mut signals = vec![None; signals_num];
-    signals[0] = Some(T::one());
+    signals[0] = Some(F::Type::one());
 
-    let inputs_data = fs::read_to_string(&inputs_file)?;
+    let inputs_data = fs::read_to_string(inputs_file)?;
     let input_signals = parse_signals_json(inputs_data.as_bytes(), ff)?;
     for (path, value) in input_signals.iter() {
         match input_signals_info.get(path) {
@@ -284,75 +271,9 @@ fn init_signals<T: FieldOps, F: FieldOperations>(
                     RuntimeError::InvalidSignalsJson(
                         format!("signal {} is not found in SYM file", path))))
             },
-            Some(signal_idx) => todo!()
+            Some(signal_idx) => signals[*signal_idx] = Some(*value),
         }
     }
-
-    /*
-    use serde_json::{Value, Map};
-use std::collections::HashMap;
-
-fn flatten_json(value: &Value, prefix: &str, result: &mut HashMap<String, String>) {
-    match value {
-        Value::Object(map) => {
-            for (key, val) in map {
-                let new_prefix = if prefix.is_empty() {
-                    key.to_string()
-                } else {
-                    format!("{}.{}", prefix, key)
-                };
-                flatten_json(val, &new_prefix, result);
-            }
-        },
-        Value::Array(arr) => {
-            for (index, val) in arr.iter().enumerate() {
-                let new_prefix = format!("{}[{}]", prefix, index);
-                flatten_json(val, &new_prefix, result);
-            }
-        },
-        _ => {
-            // Convert any value to a string
-            result.insert(prefix.to_string(), value.to_string().trim_matches('"').to_string());
-        }
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Corrected JSON example
-    let json_str = r#"{
-        "a": ["300", 3, "8432", 3, 2],
-        "inB": "100500",
-        "v": {
-            "v": [
-                {
-                    "start": {"x": 3, "y": 5},
-                    "end": {"x": 6, "y": 7}
-                },
-                {
-                    "start": {"x": 8, "y": 9},
-                    "end": {"x": 10, "y": 11}
-                }
-            ]
-        }
-    }"#;
-    
-    let json_value: Value = serde_json::from_str(json_str)?;
-    let mut flattened = HashMap::new();
-    
-    // Use "main" as the root prefix as shown in your example
-    flatten_json(&json_value, "main", &mut flattened);
-    
-    // Print in sorted order for readability
-    let mut keys: Vec<&String> = flattened.keys().collect();
-    keys.sort();
-    
-    for key in keys {
-        println!("{} => \"{}\"", key, flattened.get(key).unwrap());
-    }
-    
-    Ok(())
-}
-     */
 
     Ok(signals)
 }

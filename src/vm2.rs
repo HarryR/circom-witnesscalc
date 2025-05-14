@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
-use crate::field::FieldOps;
+use crate::field::{FieldOperations, FieldOps};
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -181,14 +181,12 @@ where
     ip
 }
 
-pub fn execute<T>(
-    templates: &[Template], signals: &mut [Option<T>],
-    main_template_id: usize) -> Result<(), Box<dyn Error>>
-where
-    T: FieldOps {
+pub fn execute<F: FieldOperations>(
+    templates: &[Template], signals: &mut [Option<F::Type>],
+    main_template_id: usize, ff: F) -> Result<(), Box<dyn Error>> {
 
     let mut ip: usize = 0;
-    let mut vm = VM::<T>::new();
+    let mut vm = VM::<F::Type>::new();
     vm.stack_ff.resize_with(
         templates[main_template_id].vars_ff_num, || None);
     vm.stack_i64.resize_with(
@@ -200,7 +198,8 @@ where
             break 'label;
         }
 
-        disassemble_instruction::<T>(&templates[main_template_id].code, ip,
+        disassemble_instruction::<F::Type>(
+            &templates[main_template_id].code, ip,
             &templates[main_template_id].name);
 
         let op_code = read_instruction(
@@ -235,9 +234,10 @@ where
                 ip += 8;
             }
             OpCode::PushFf => {
-                let s = &templates[main_template_id].code[ip..ip+T::BYTES];
-                ip += T::BYTES;
-                let v = T::from_le_bytes(s)?;
+                let s = &templates[main_template_id]
+                    .code[ip..ip+F::Type::BYTES];
+                ip += F::Type::BYTES;
+                let v = ff.parse_le_bytes(s)?;
                 vm.push_ff(v);
             }
             OpCode::StoreVariableFf => {
@@ -267,12 +267,12 @@ where
             OpCode::OpMul => {
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
-                vm.push_ff(lhs.mul(rhs));
+                vm.push_ff(ff.mul(lhs, rhs));
             }
             OpCode::OpAdd => {
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
-                vm.push_ff(lhs.add(rhs));
+                vm.push_ff(ff.add(lhs, rhs));
             }
         }
     }
