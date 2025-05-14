@@ -1,6 +1,6 @@
 use num_bigint::BigUint;
 use winnow::ascii::{digit1, space0, space1, line_ending, alpha1};
-use winnow::error::{ContextError, ErrMode, ParserError, StrContext, StrContextValue};
+use winnow::error::{ContextError, ErrMode, ParseError, ParserError, StrContext, StrContextValue};
 use winnow::{ModalResult};
 use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail, opt, cut_err, trace, eof, delimited};
 use winnow::Parser;
@@ -367,7 +367,7 @@ fn parse_template(i: &mut &str) -> ModalResult<Template> {
     }}.parse_next(i)
 }
 
-pub fn parse_ast(i: &mut &str) -> ModalResult<AST> {
+fn parse_ast(i: &mut &str) -> ModalResult<AST> {
     seq!{AST{
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         prime: parse_prime
@@ -390,6 +390,10 @@ pub fn parse_ast(i: &mut &str) -> ModalResult<AST> {
         _: repeat::<_, _, (), _, _>(0.., parse_empty_line),
         templates: repeat(1.., parse_template),
     }}.parse_next(i)
+}
+
+pub fn parse(i: &str) -> Result<AST, ParseError<&str, ContextError>> {
+    parse_ast.parse(i)
 }
 
 #[cfg(test)]

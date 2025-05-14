@@ -1,4 +1,4 @@
-use std::{env, fs};
+use std::{env, fs, process};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
@@ -10,7 +10,7 @@ use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Statement};
 use circom_witnesscalc::field::{Field, FieldOperations, FieldOps, U254};
-use circom_witnesscalc::parser::parse_ast;
+use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
 
 struct WantWtns {
@@ -133,7 +133,15 @@ fn main() {
     let args = parse_args();
 
     let program_text = fs::read_to_string(&args.cvm_file).unwrap();
-    let program = parse_ast(&mut(program_text.as_str())).unwrap();
+    let program = match parse(&program_text) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
+    };
+
+    println!("number of templates: {}", program.templates.len());
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
         let circuit = compile::<U254>(&program, &args.sym_file).unwrap();
