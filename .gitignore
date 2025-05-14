@@ -6,4 +6,5 @@ circuit.cc
 constants.dat
 .idea
 /test_working_dir
+/test_working_dir_vm2
 /experiments
