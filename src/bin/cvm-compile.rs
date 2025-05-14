@@ -265,6 +265,13 @@ fn init_signals<F: FieldOperations>(
     for (path, value) in input_signals.iter() {
         match input_signals_info.get(path) {
             None => {
+                if path.ends_with("[0]") {
+                    let path = path.trim_end_matches("[0]");
+                    if let Some(signal_idx) = input_signals_info.get(path) {
+                        signals[*signal_idx] = Some(*value);
+                        continue;
+                    }
+                }
                 return Err(Box::new(
                     RuntimeError::InvalidSignalsJson(
                         format!("signal {} is not found in SYM file", path))))
