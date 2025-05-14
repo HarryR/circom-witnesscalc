@@ -23,6 +23,7 @@ pub enum OpCode {
     LoadVariableFf  = 7,
     OpMul           = 8,
     OpAdd           = 9,
+    OpNeq           = 10,
 }
 
 pub struct Circuit<T: FieldOps> {
@@ -176,6 +177,9 @@ where
         OpCode::OpAdd => {
             println!("OpAdd");
         }
+        OpCode::OpNeq => {
+            println!("OpNeq");
+        }
     }
 
     ip
@@ -273,6 +277,11 @@ pub fn execute<F: FieldOperations>(
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.add(lhs, rhs));
+            }
+            OpCode::OpNeq => {
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.neq(lhs, rhs));
             }
         }
     }

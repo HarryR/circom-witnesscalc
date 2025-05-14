@@ -255,6 +255,7 @@ pub enum Expr {
     GetSignal(I64Operand),
     FfAdd(FfOperand, FfOperand),
     FfMul(FfOperand, FfOperand),
+    FfNeq(FfOperand, FfOperand),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

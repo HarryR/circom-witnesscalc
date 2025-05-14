@@ -460,6 +460,11 @@ where
             operand_ff::<T>(ctx, lhs);
             ctx.code.push(OpCode::OpAdd as u8);
         },
+        ast::Expr::FfNeq(lhs, rhs) => {
+            operand_ff::<T>(ctx, rhs);
+            operand_ff::<T>(ctx, lhs);
+            ctx.code.push(OpCode::OpNeq as u8);
+        },
     }
 }
 

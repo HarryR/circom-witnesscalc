@@ -216,7 +216,9 @@ fn parse_assignment(input: &mut &str) -> ModalResult<Assignment> {
     let (var_name, _, _, _, expr, _, _, _) = seq!(
         parse_variable_name,
         space0, literal("="), space0,
-        parse_expression,
+        cut_err(parse_expression
+            .context(StrContext::Label("expression"))
+            .context(StrContext::Expected(StrContextValue::Description("valid expression")))),
         space0,
         opt(parse_eol_comment),
         parse_line_end)
@@ -247,6 +249,8 @@ fn parse_expression(input: &mut &str) -> ModalResult<Expr> {
             .map(|(op1, op2)| Expr::FfMul(op1, op2)),
         "ff.add" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
             .map(|(op1, op2)| Expr::FfAdd(op1, op2)),
+        "ff.neq" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
+            .map(|(op1, op2)| Expr::FfNeq(op1, op2)),
         // "get_signal" => {
         //     Ok(Expr::GetSignal(I64Operand::Literal(0)))
         // },
