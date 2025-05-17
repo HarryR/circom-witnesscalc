@@ -5,7 +5,7 @@ use winnow::{ModalResult};
 use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail, opt, cut_err, trace, eof, delimited};
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
-use crate::ast::{Assignment, ComponentsMode, Expr, FfOperand, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
+use crate::ast::{Assignment, ComponentsMode, FfExpr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -137,11 +137,11 @@ fn parse_i64_operand(input: &mut &str) -> ModalResult<I64Operand> {
     }
 }
 
-fn parse_ff_operand(input: &mut &str) -> ModalResult<FfOperand> {
+fn parse_ff_expr(input: &mut &str) -> ModalResult<FfExpr> {
     if let Some(x) = opt(parse_ff_literal).parse_next(input)? {
-        Ok(FfOperand::Literal(x))
+        Ok(FfExpr::Literal(x))
     } else if let Some(x) = opt(parse_variable_name).parse_next(input)? {
-        Ok(FfOperand::Variable(x.to_string()))
+        Ok(FfExpr::Variable(x.to_string()))
     } else {
         fail.parse_next(input)?
     }
@@ -231,45 +231,133 @@ fn parse_assignment(input: &mut &str) -> ModalResult<Assignment> {
 
 fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
     let s = dispatch! {parse_operator_name;
-        "set_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_ff_operand))
+        "set_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_ff_expr))
             .map(|(op1, op2)| Statement::SetSignal{ idx: op1, value: op2 }),
+        "set_cmp_input_run" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_ff_expr))
+            .map(
+                |(op1, op2, op3)| Statement::SetCmpSignalRun{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "error" => preceded(space1, parse_i64_operand)
+            .map(|op1| Statement::Error{ code: op1 }),
+        "if" => {
+            |i: &mut &str| {
+                // Parse the condition
+                let (condition, _, _, _) = seq!(
+                    preceded(space1, parse_expression),
+                    space0,
+                    opt(parse_eol_comment),
+                    parse_line_end
+                ).parse_next(i)?;
+
+                // Parse the if block
+                let mut if_block = Vec::new();
+                'if_block: while !i.is_empty() {
+                    if i.starts_with("else") || i.starts_with("end") {
+                        break 'if_block;
+                    }
+
+                    let inst = alt((
+                        parse_assignment.map(|x| Some(TemplateInstruction::Assignment(x))),
+                        parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
+                        parse_empty_line.map(|_| None),
+                    )).parse_next(i);
+
+                    match inst {
+                        Ok(Some(inst)) => { if_block.push(inst); }
+                        Ok(None) => (),
+                        Err(err) => {
+                            match err {
+                                ErrMode::Cut(_) => { return Err(err); }
+                                _ => { break 'if_block; }
+                            }
+                        }
+                    }
+                }
+
+                // Parse the optional else block
+                let mut else_block = Vec::new();
+                if i.starts_with("else") {
+                    // Consume the "else" keyword
+                    let _ = (literal("else"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
+
+                    'else_block: while !i.is_empty() {
+                        if i.starts_with("end") {
+                            break 'else_block;
+                        }
+
+                        let inst = alt((
+                            parse_assignment.map(|x| Some(TemplateInstruction::Assignment(x))),
+                            parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
+                            parse_empty_line.map(|_| None),
+                        )).parse_next(i);
+
+                        match inst {
+                            Ok(Some(inst)) => { else_block.push(inst); }
+                            Ok(None) => (),
+                            Err(err) => {
+                                match err {
+                                    ErrMode::Cut(_) => { return Err(err); }
+                                    _ => { break 'else_block; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Consume the "end" keyword
+                let _ = (literal("end"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
+
+                Ok(Statement::Branch {
+                    condition,
+                    if_block,
+                    else_block,
+                })
+            }
+        },
         _ => fail::<_, Statement, _>,
     }
         .parse_next(input)?;
 
-    (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
+    // For set_signal, we need to parse the line end
+    if let Statement::SetSignal { .. } = s {
+        (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
+    }
 
     Ok(s)
 }
 
-fn parse_expression(input: &mut &str) -> ModalResult<Expr> {
-    let x = dispatch! {parse_operator_name;
-        "get_signal" => preceded(space1, parse_i64_operand).map(Expr::GetSignal),
-        "ff.mul" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
-            .map(|(op1, op2)| Expr::FfMul(op1, op2)),
-        "ff.add" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
-            .map(|(op1, op2)| Expr::FfAdd(op1, op2)),
-        "ff.neq" => (preceded(space1, parse_ff_operand), preceded(space1, parse_ff_operand))
-            .map(|(op1, op2)| Expr::FfNeq(op1, op2)),
-        // "get_signal" => {
-        //     Ok(Expr::GetSignal(I64Operand::Literal(0)))
-        // },
-        // "get_signal" => {
-        //     // Parse the rest of the expression
-        //     let operand = i64_operand.parse_next(input)?;
-        //     Ok(Expr::GetSignal(operand))
-        // },
-        _ => fail::<_, Expr, _>,
-    }
-        .parse_next(input)?;
-        // "ff.add" => {
-        //     // Parse the rest of the expression
-        //     let operand1 = i64_operand.parse_next(input)?;
-        //     let operand2 = i64_operand.parse_next(input)?;
-        //     Ok(Expr::FfAdd(operand1, operand2))
-        // },
-    // println!("{}", x);
-    Ok(x)
+fn parse_expression(input: &mut &str) -> ModalResult<FfExpr> {
+    let result = alt((
+        // Try to parse as an operator expression
+        dispatch! {parse_operator_name;
+            "get_signal" => preceded(space1, parse_i64_operand).map(FfExpr::GetSignal),
+            "get_cmp_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_i64_operand))
+                .map(|(op1, op2)| FfExpr::GetCmpSignal { cmp_idx: op1, sig_idx: op2 }),
+            "ff.mul" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfMul(Box::new(op1), Box::new(op2))),
+            "ff.add" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfAdd(Box::new(op1), Box::new(op2))),
+            "ff.neq" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfNeq(Box::new(op1), Box::new(op2))),
+            "ff.div" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfDiv(Box::new(op1), Box::new(op2))),
+            "ff.sub" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfSub(Box::new(op1), Box::new(op2))),
+            "ff.eq" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
+                .map(|(op1, op2)| FfExpr::FfEq(Box::new(op1), Box::new(op2))),
+            "ff.eqz" => (preceded(space1, parse_ff_expr))
+                .map(|op1| FfExpr::FfEqz(Box::new(op1))),
+            _ => fail::<_, FfExpr, _>,
+        },
+        // Try to parse as a literal
+        parse_ff_literal.map(FfExpr::Literal),
+        // Try to parse as a variable
+        parse_variable_name.map(|name| FfExpr::Variable(name.to_string())),
+    )).parse_next(input)?;
+
+    Ok(result)
 }
 
 fn parse_eol_comment(i: &mut &str) -> ModalResult<()>
@@ -408,7 +496,74 @@ mod tests {
     use crate::parser::{parse_assignment, parse_ast, parse_bus_signal, parse_eol_comment, parse_expression, parse_ff_signal, parse_i64_literal, parse_i64_operand, parse_operator_name, parse_prime, parse_statement, parse_template, parse_template_body, parse_variable_name};
     use winnow::{Parser};
     use winnow::token::{take_till};
-    use crate::ast::{Assignment, ComponentsMode, Expr, FfOperand, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
+    use crate::ast::{Assignment, ComponentsMode, FfExpr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
+
+    #[test]
+    fn test_parse_branch() {
+        let mut input = r#"if x_1
+;; store bucket. Line 30
+;; getting src
+;; compute bucket
+;; load bucket
+;; end of load bucket
+x_2 = get_signal i64.1
+;; OP(DIV)
+x_3 = ff.div ff.1 x_2
+;; end of compute bucket
+;; getting dest
+set_signal i64.2 x_3
+;; end of store bucket
+else
+;; store bucket. Line 30
+;; getting src
+;; getting dest
+set_signal i64.2 ff.0
+;; end of store bucket
+end
+"#;
+
+        let statement = parse_statement.parse(&mut input).unwrap();
+
+        let want = Statement::Branch {
+            condition: ff("x_1"),
+            if_block: vec![
+                assign("x_2", &get_signal("1")),
+                assign("x_3", &ff_div("1", "x_2")),
+                set_signal("2", "x_3"),
+            ],
+            else_block: vec![
+                set_signal("2", "0"),
+            ],
+        };
+        assert_eq!(statement, want);
+    }
+
+    #[test]
+    fn test_parse_branch2() {
+        let mut input = r#"if get_signal x_1
+x_2 = get_signal i64.1
+x_3 = ff.div ff.1 x_2
+set_signal i64.2 x_3
+else
+set_signal i64.2 ff.0
+end
+"#;
+
+        let statement = parse_statement.parse(&mut input).unwrap();
+
+        let want = Statement::Branch {
+            condition: get_signal("x_1"),
+            if_block: vec![
+                assign("x_2", &get_signal("1")),
+                assign("x_3", &ff_div("1", "x_2")),
+                set_signal("2", "x_3"),
+            ],
+            else_block: vec![
+                set_signal("2", "0"),
+            ],
+        };
+        assert_eq!(statement, want);
+    }
 
     #[test]
     fn test_parse_variable_name() {
@@ -459,14 +614,29 @@ expected valid i64 value";
     }
 
     #[test]
-    fn test_get_signal() {
+    fn test_parse_expression() {
         let mut input = "get_signal x_50";
-        let want = Expr::GetSignal(I64Operand::Variable("x_50".to_string()));
+        let want = get_signal("x_50");
         let op = parse_expression.parse(&mut input).unwrap();
         assert_eq!(op, want);
 
         let mut input = "get_signal i64.2";
-        let want = Expr::GetSignal(I64Operand::Literal(2));
+        let want = get_signal("2");
+        let op = parse_expression.parse(&mut input).unwrap();
+        assert_eq!(op, want);
+
+        let mut input = "ff.div ff.2 v_3";
+        let want = ff_div("2", "v_3");
+        let op = parse_expression.parse(&mut input).unwrap();
+        assert_eq!(op, want);
+
+        let mut input = "v_3";
+        let want = ff("v_3");
+        let op = parse_expression.parse(&mut input).unwrap();
+        assert_eq!(op, want);
+
+        let mut input = "ff.5";
+        let want = ff("5");
         let op = parse_expression.parse(&mut input).unwrap();
         assert_eq!(op, want);
     }
@@ -476,7 +646,7 @@ expected valid i64 value";
         let mut input = "x_4 = get_signal i64.2";
         let want = Assignment{
             dest: "x_4".to_string(),
-            value: Expr::GetSignal(I64Operand::Literal(2)),
+            value: get_signal("2"),
         };
         let a = parse_assignment.parse(&mut input).unwrap();
         assert_eq!(a, want);
@@ -487,7 +657,7 @@ expected valid i64 value";
         let mut input = "x_4 = get_signal i64.2\nxxx";
         let want = Assignment{
             dest: "x_4".to_string(),
-            value: Expr::GetSignal(I64Operand::Literal(2)),
+            value: get_signal("2"),
         };
         let a = parse_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
@@ -496,7 +666,7 @@ expected valid i64 value";
         let mut input = "x_4 = get_signal i64.2;;\nxxx";
         let want = Assignment{
             dest: "x_4".to_string(),
-            value: Expr::GetSignal(I64Operand::Literal(2)),
+            value: get_signal("2"),
         };
         let a = parse_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
@@ -505,7 +675,7 @@ expected valid i64 value";
         let mut input = "x_4 = get_signal i64.2 ;; comment \nxxx";
         let want = Assignment{
             dest: "x_4".to_string(),
-            value: Expr::GetSignal(I64Operand::Literal(2)),
+            value: get_signal("2"),
         };
         let a = parse_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
@@ -517,7 +687,7 @@ expected valid i64 value";
 x_2 = ff.mul x_0 x_1";
         let want = Assignment{
             dest: "x_1".to_string(),
-            value: Expr::GetSignal(I64Operand::Literal(2)),
+            value: get_signal("2"),
         };
         let a = parse_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
@@ -531,7 +701,7 @@ x_2 = ff.mul x_0 x_1";
         let mut input = "set_signal i64.0 x_3";
         let want = Statement::SetSignal {
             idx: I64Operand::Literal(0),
-            value: FfOperand::Variable("x_3".to_string()),
+            value: ff("x_3"),
         };
         let a = parse_statement.parse(&mut input).unwrap();
         assert_eq!(a, want);
@@ -540,7 +710,7 @@ x_2 = ff.mul x_0 x_1";
 x";
         let want = Statement::SetSignal {
             idx: I64Operand::Literal(0),
-            value: FfOperand::Variable("x_3".to_string()),
+            value: ff("x_3"),
         };
         let a = parse_statement.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
@@ -551,7 +721,7 @@ x";
 x";
         let want = Statement::SetSignal {
             idx: I64Operand::Literal(0),
-            value: FfOperand::Variable("x_3".to_string()),
+            value: ff("x_3"),
         };
         let a = parse_statement.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
@@ -559,10 +729,14 @@ x";
     }
 
     #[test]
-    fn test_3() {
+    fn test_parse_i64_literal_error() {
         let mut input = "i64.93841982938198593829123 = get_signal";
         let op = parse_i64_literal.parse(&mut input).unwrap_err();
-        println!("{}", op);
+        let want_err = r#"i64.93841982938198593829123 = get_signal
+    ^
+invalid i64 literal
+expected valid i64 value"#;
+        assert_eq!(want_err, op.to_string().as_str());
     }
 
     #[test]
@@ -629,24 +803,10 @@ x_3 = ff.add x_2 ff.2
 ;; getting dest
 set_signal i64.0 x_3";
         let want = vec![
-            TemplateInstruction::Assignment(Assignment{
-                dest: "x_1".to_string(),
-                value: Expr::GetSignal(I64Operand::Literal(2)),
-            }),
-            TemplateInstruction::Assignment(Assignment{
-                dest: "x_2".to_string(),
-                value: Expr::FfMul(FfOperand::Variable("x_0".to_string()),
-                                   FfOperand::Variable("x_1".to_string())),
-            }),
-            TemplateInstruction::Assignment(Assignment{
-                dest: "x_3".to_string(),
-                value: Expr::FfAdd(FfOperand::Variable("x_2".to_string()),
-                                   FfOperand::Literal(BigUint::from(2u32))),
-            }),
-            TemplateInstruction::Statement(Statement::SetSignal {
-                idx: I64Operand::Literal(0),
-                value: FfOperand::Variable("x_3".to_string()),
-            }),
+            assign("x_1", &get_signal("2")),
+            assign("x_2", &ff_mul("x_0", "x_1")),
+            assign("x_3", &ff_add("x_2", "2")),
+            set_signal("0", "x_3"),
         ];
         let template_body = parse_template_body.parse_next(&mut input).unwrap();
         assert_eq!(want, template_body);
@@ -663,15 +823,8 @@ set_signal i64.0 x_2
 %%template Tmpl2_1 [ ff 1 3] [ ff 0 ] [4] [ ]
 ;; store bucket. Line 26";
         let want = vec![
-            TemplateInstruction::Assignment(Assignment{
-                dest: "x_2".to_string(),
-                value: Expr::FfMul(FfOperand::Variable("x_0".to_string()),
-                                   FfOperand::Variable("x_1".to_string())),
-            }),
-            TemplateInstruction::Statement(Statement::SetSignal {
-                idx: I64Operand::Literal(0),
-                value: FfOperand::Variable("x_2".to_string()),
-            }),
+            assign("x_2", &ff_mul("x_0", "x_1")),
+            set_signal("0", "x_2"),
         ];
         let template_body = parse_template_body.parse_next(&mut input).unwrap();
         assert_eq!(want, template_body);
@@ -708,28 +861,11 @@ set_signal i64.0 x_3
             signals_num: 3,
             components: vec![],
             body: vec![
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_0".to_string(),
-                    value: Expr::GetSignal(I64Operand::Literal(1)),
-                }),
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_1".to_string(),
-                    value: Expr::GetSignal(I64Operand::Literal(2)),
-                }),
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_2".to_string(),
-                    value: Expr::FfMul(FfOperand::Variable("x_0".to_string()),
-                                       FfOperand::Variable("x_1".to_string())),
-                }),
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_3".to_string(),
-                    value: Expr::FfAdd(FfOperand::Variable("x_2".to_string()),
-                                       FfOperand::Literal(BigUint::from(2u32))),
-                }),
-                TemplateInstruction::Statement(Statement::SetSignal {
-                    idx: I64Operand::Literal(0),
-                    value: FfOperand::Variable("x_3".to_string()),
-                }),
+                assign("x_0", &get_signal("1")),
+                assign("x_1", &get_signal("2")),
+                assign("x_2", &ff_mul("x_0", "x_1")),
+                assign("x_3", &ff_add("x_2", "2")),
+                set_signal("0", "x_3"),
             ],
         };
         let tmpl_header = parse_template.parse_next(&mut input).unwrap();
@@ -764,28 +900,11 @@ set_signal i64.0 x_3
             signals_num: 3,
             components: vec![Some(0), None, Some(2), Some(2)],
             body: vec![
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_0".to_string(),
-                    value: Expr::GetSignal(I64Operand::Literal(1)),
-                }),
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_1".to_string(),
-                    value: Expr::GetSignal(I64Operand::Literal(2)),
-                }),
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_2".to_string(),
-                    value: Expr::FfMul(FfOperand::Variable("x_0".to_string()),
-                                       FfOperand::Variable("x_1".to_string())),
-                }),
-                TemplateInstruction::Assignment(Assignment{
-                    dest: "x_3".to_string(),
-                    value: Expr::FfAdd(FfOperand::Variable("x_2".to_string()),
-                                       FfOperand::Literal(BigUint::from(2u32))),
-                }),
-                TemplateInstruction::Statement(Statement::SetSignal {
-                    idx: I64Operand::Literal(0),
-                    value: FfOperand::Variable("x_3".to_string()),
-                }),
+                assign("x_0", &get_signal("1")),
+                assign("x_1", &get_signal("2")),
+                assign("x_2", &ff_mul("x_0", "x_1")),
+                assign("x_3", &ff_add("x_2", "2")),
+                set_signal("0", "x_3"),
             ],
         };
         let tmpl_header = parse_template.parse_next(&mut input).unwrap();
@@ -842,14 +961,8 @@ x_1 = get_signal i64.2
                     signals_num: 3,
                     components: vec![],
                     body: vec![
-                        TemplateInstruction::Assignment(Assignment{
-                            dest: "x_0".to_string(),
-                            value: Expr::GetSignal(I64Operand::Literal(1)),
-                        }),
-                        TemplateInstruction::Assignment(Assignment{
-                            dest: "x_1".to_string(),
-                            value: Expr::GetSignal(I64Operand::Literal(2)),
-                        }),
+                        assign("x_0", &get_signal("1")),
+                        assign("x_1", &get_signal("2")),
                     ],
                 },
                 Template {
@@ -859,14 +972,8 @@ x_1 = get_signal i64.2
                     signals_num: 3,
                     components: vec![],
                     body: vec![
-                        TemplateInstruction::Assignment(Assignment{
-                            dest: "x_0".to_string(),
-                            value: Expr::GetSignal(I64Operand::Literal(1)),
-                        }),
-                        TemplateInstruction::Assignment(Assignment{
-                            dest: "x_1".to_string(),
-                            value: Expr::GetSignal(I64Operand::Literal(2)),
-                        }),
+                        assign("x_0", &get_signal("1")),
+                        assign("x_1", &get_signal("2")),
                     ],
                 },
             ],
@@ -901,7 +1008,7 @@ expected newline";
         // ok
         let mut input = "%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
 x";
-        let want = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
+        let want = big_uint("21888242871839275222246405745257275088548364400416034343698204186575808495617");
         let prime = parse_prime.parse_next(&mut input).unwrap();
         assert_eq!(want, prime);
         assert_eq!(input, "x");
@@ -910,5 +1017,76 @@ x";
         let mut input = "%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617\n";
         let prime = consume_parse_result(parse_prime.parse(&mut input));
         assert_eq!(want, prime);
+    }
+
+    fn big_uint(n: &str) -> BigUint {
+        BigUint::from_str_radix(n, 10).unwrap()
+    }
+
+    fn assign(var_name: &str, expr: &FfExpr) -> TemplateInstruction {
+        TemplateInstruction::Assignment(Assignment{
+            dest: var_name.to_string(),
+            value: expr.clone(),
+        })
+    }
+
+    fn is_alpha_or_underscore(s: &str) -> bool {
+        if let Some(c) = s.chars().next() {
+            if c.is_alphabetic() || c == '_' {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn ff(n: &str) -> FfExpr {
+        let is_var = is_alpha_or_underscore(n);
+
+        if is_var {
+            FfExpr::Variable(n.to_string())
+        } else {
+            FfExpr::Literal(big_uint(n))
+        }
+    }
+
+    fn i64_op(n: &str) -> I64Operand {
+        let is_var = is_alpha_or_underscore(n);
+        if is_var {
+            I64Operand::Variable(n.to_string())
+        } else {
+            I64Operand::Literal(n.parse().unwrap())
+        }
+    }
+
+    fn set_signal(op1: &str, op2: &str) -> TemplateInstruction {
+        TemplateInstruction::Statement(Statement::SetSignal {
+            idx: i64_op(op1),
+            value: ff(op2),
+        })
+    }
+
+    fn ff_div(op1: &str, op2: &str) -> FfExpr {
+        FfExpr::FfDiv(
+            Box::new(ff(op1)),
+            Box::new(ff(op2))
+        )
+    }
+
+    fn ff_mul(op1: &str, op2: &str) -> FfExpr {
+        FfExpr::FfMul(
+            Box::new(ff(op1)),
+            Box::new(ff(op2))
+        )
+    }
+
+    fn ff_add(op1: &str, op2: &str) -> FfExpr {
+        FfExpr::FfAdd(
+            Box::new(ff(op1)),
+            Box::new(ff(op2))
+        )
+    }
+
+    fn get_signal(op1: &str) -> FfExpr {
+        FfExpr::GetSignal(i64_op(op1))
     }
 }

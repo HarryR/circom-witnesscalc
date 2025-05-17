@@ -5,11 +5,11 @@ use std::fs::File;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use num_bigint::BigUint;
-use num_traits::{Num, ToBytes, Zero, One};
+use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Statement};
-use circom_witnesscalc::field::{Field, FieldOperations, FieldOps, U254};
+use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
 
@@ -35,6 +35,8 @@ enum CompilationError {
     WitnessSignalNotSet,
     #[error("incorrect SYM file format: `{0}`")]
     IncorrectSymFileFormat(String),
+    #[error("jump offset is too large")]
+    JumpOffsetIsTooLarge,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,7 +146,8 @@ fn main() {
     println!("number of templates: {}", program.templates.len());
     let bn254 = BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap();
     if program.prime == bn254 {
-        let circuit = compile::<U254>(&program, &args.sym_file).unwrap();
+        let ff = Field::new(bn254_prime);
+        let circuit = compile(&ff, &program, &args.sym_file).unwrap();
         disassemble::<U254>(&circuit.templates);
         if args.want_wtns.is_some() {
             calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
@@ -193,12 +196,14 @@ fn input_signals_info(
 }
 
 fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
-    let ff = Field::new(circuit.prime);
     let mut signals = init_signals(
-        &want_wtns.inputs_file, circuit.signals_num, &&ff,
+        &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.input_signals_info)?;
-    execute(&circuit.templates, &mut signals, circuit.main_template_id, &ff)?;
-    let wtns_data = witness::<T>(&signals, &circuit.witness, circuit.prime)?;
+    execute(
+        &circuit.templates, &mut signals, circuit.main_template_id,
+        &circuit.field)?;
+    let wtns_data = witness(
+        &signals, &circuit.witness, circuit.field.prime)?;
 
     let mut file = File::create(Path::new(&want_wtns.wtns_file))?;
     file.write_all(&wtns_data)?;
@@ -207,25 +212,29 @@ fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, want_wtns: WantWtns) -> 
     Ok(())
 }
 
-fn parse_signals_json<F: FieldOperations>(
-    inputs_data: &[u8], ff: &F) -> Result<HashMap<String, F::Type>, Box<dyn Error>> {
+fn parse_signals_json<T: FieldOps, F>(
+    inputs_data: &[u8], ff: &F) -> Result<HashMap<String, T>, Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations<Type = T> {
 
     let v: serde_json::Value = serde_json::from_slice(inputs_data)?;
-    let mut records: HashMap<String, F::Type> = HashMap::new();
-    visit_inputs_json::<F>("main", &v, &mut records, ff)?;
+    let mut records: HashMap<String, T> = HashMap::new();
+    visit_inputs_json("main", &v, &mut records, ff)?;
     Ok(records)
 }
 
-fn visit_inputs_json<F: FieldOperations>(
-    prefix: &str, v: &serde_json::Value, records: &mut HashMap<String, F::Type>,
-    ff: &F) -> Result<(), Box<dyn Error>> {
+fn visit_inputs_json<T: FieldOps, F>(
+    prefix: &str, v: &serde_json::Value, records: &mut HashMap<String, T>,
+    ff: &F) -> Result<(), Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations<Type = T> {
 
     match v {
         serde_json::Value::Null => return Err(Box::new(
             RuntimeError::InvalidSignalsJson(
                 format!("unexpected null value at path {}", prefix)))),
         serde_json::Value::Bool(b) => {
-            let b = if *b { F::Type::one() } else { F::Type::zero() };
+            let b = if *b { T::one() } else { T::zero() };
             records.insert(prefix.to_string(), b);
         },
         serde_json::Value::Number(n) => {
@@ -261,12 +270,14 @@ fn visit_inputs_json<F: FieldOperations>(
     Ok(())
 }
 
-fn init_signals<F: FieldOperations>(
+fn init_signals<T: FieldOps, F>(
     inputs_file: &str, signals_num: usize, ff: &F,
-    input_signals_info: &HashMap<String, usize>) -> Result<Vec<Option<F::Type>>, Box<dyn Error>> {
+    input_signals_info: &HashMap<String, usize>) -> Result<Vec<Option<T>>, Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations<Type = T> {
 
     let mut signals = vec![None; signals_num];
-    signals[0] = Some(F::Type::one());
+    signals[0] = Some(T::one());
 
     let inputs_data = fs::read_to_string(inputs_file)?;
     let input_signals = parse_signals_json(inputs_data.as_bytes(), ff)?;
@@ -344,15 +355,14 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
     }
 }
 
-fn compile<T>(
-    tree: &ast::AST, sym_file: &str) -> Result<Circuit<T>, Box<dyn Error>>
-where
-    T: FieldOps {
+fn compile<T: FieldOps>(
+    ff: &Field<T>, tree: &ast::AST, sym_file: &str) -> Result<Circuit<T>, Box<dyn Error>>
+where {
 
     let mut templates = Vec::new();
 
     for t in tree.templates.iter() {
-        let compiled_template = compile_template::<T>(t);
+        let compiled_template = compile_template(t, ff)?;
         templates.push(compiled_template);
         // println!("Template: {}", t.name);
         // println!("Compiled code len: {}", compiled_template.code.len());
@@ -368,12 +378,10 @@ where
     let main_template_id = main_template_id
         .ok_or(CompilationError::MainTemplateIDNotFound)?;
 
-    let prime = T::from_le_bytes(&tree.prime.to_le_bytes())?;
-
     Ok(Circuit {
         main_template_id,
         templates,
-        prime,
+        field: ff.clone(),
         witness: tree.witness.clone(),
         input_signals_info: input_signals_info(sym_file, main_template_id)?,
         signals_num: tree.signals,
@@ -407,24 +415,6 @@ impl TemplateCompilationContext {
     }
 }
 
-fn operand_ff<T>(ctx: &mut TemplateCompilationContext, operand: &ast::FfOperand)
-where
-    T: FieldOps {
-
-    match operand {
-        ast::FfOperand::Literal(v) => {
-            ctx.code.push(OpCode::PushFf as u8);
-            let x = T::from_le_bytes(v.to_le_bytes().as_slice()).unwrap();
-            ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
-        }
-        ast::FfOperand::Variable(var_name) => {
-            let var_idx = ctx.get_ff_variable_index(var_name);
-            ctx.code.push(OpCode::LoadVariableFf as u8);
-            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
-        }
-    }
-}
-
 fn operand_i64(
     ctx: &mut TemplateCompilationContext, operand: &ast::I64Operand) {
 
@@ -441,41 +431,79 @@ fn operand_i64(
     }
 }
 
-fn expression<T>(ctx: &mut TemplateCompilationContext, expr: &ast::Expr)
+fn expression<F>(
+    ctx: &mut TemplateCompilationContext, ff: &F,
+    expr: &ast::FfExpr) -> Result<(), Box<dyn Error>>
 where
-    T: FieldOps {
+    for <'a> &'a F: FieldOperations {
 
     match expr {
-        ast::Expr::GetSignal(operand) => {
+        ast::FfExpr::GetSignal(operand) => {
             operand_i64(ctx, operand);
             ctx.code.push(OpCode::LoadSignal as u8);
         }
-        ast::Expr::FfMul(lhs, rhs) => {
-            operand_ff::<T>(ctx, rhs);
-            operand_ff::<T>(ctx, lhs);
+        ast::FfExpr::GetCmpSignal{ cmp_idx, sig_idx } => {
+            operand_i64(ctx, cmp_idx);
+            operand_i64(ctx, sig_idx);
+            ctx.code.push(OpCode::LoadCmpSignal as u8);
+        }
+        ast::FfExpr::FfMul(lhs, rhs) => {
+            expression(ctx, ff, rhs)?;
+            expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpMul as u8);
         },
-        ast::Expr::FfAdd(lhs, rhs) => {
-            operand_ff::<T>(ctx, rhs);
-            operand_ff::<T>(ctx, lhs);
+        ast::FfExpr::FfAdd(lhs, rhs) => {
+            expression(ctx, ff, rhs)?;
+            expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpAdd as u8);
         },
-        ast::Expr::FfNeq(lhs, rhs) => {
-            operand_ff::<T>(ctx, rhs);
-            operand_ff::<T>(ctx, lhs);
+        ast::FfExpr::FfNeq(lhs, rhs) => {
+            expression(ctx, ff, rhs)?;
+            expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpNeq as u8);
         },
-    }
+        ast::FfExpr::FfDiv(lhs, rhs) => {
+            expression(ctx, ff, rhs)?;
+            expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpDiv as u8);
+        },
+        ast::FfExpr::FfSub(lhs, rhs) => {
+            expression(ctx, ff, rhs)?;
+            expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpSub as u8);
+        },
+        ast::FfExpr::FfEq(lhs, rhs) => {
+            expression(ctx, ff, rhs)?;
+            expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpEq as u8);
+        },
+        ast::FfExpr::FfEqz(lhs) => {
+            expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpEqz as u8);
+        },
+        ast::FfExpr::Variable( var_name ) => {
+            let var_idx = ctx.get_ff_variable_index(var_name);
+            ctx.code.push(OpCode::LoadVariableFf as u8);
+            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+        },
+        ast::FfExpr::Literal(v) => {
+            ctx.code.push(OpCode::PushFf as u8);
+            let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
+            ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
+        },
+    };
+    Ok(())
 }
 
-fn instruction<T>(
-    ctx: &mut TemplateCompilationContext, inst: &ast::TemplateInstruction)
+fn instruction<F>(
+    ctx: &mut TemplateCompilationContext, ff: &F,
+    inst: &ast::TemplateInstruction) -> Result<(), Box<dyn Error>>
 where
-    T: FieldOps {
+    for <'a> &'a F: FieldOperations {
 
     match inst {
         ast::TemplateInstruction::Assignment(assignment) => {
-            expression::<T>(ctx, &assignment.value);
+            expression(ctx, ff, &assignment.value)?;
             ctx.code.push(OpCode::StoreVariableFf as u8);
             let var_idx = ctx.get_ff_variable_index(&assignment.dest);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
@@ -483,35 +511,110 @@ where
         ast::TemplateInstruction::Statement(statement) => {
             match statement {
                 Statement::SetSignal { idx, value } => {
-                    operand_ff::<T>(ctx, value);
+                    expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
+                },
+                Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
+                    operand_i64(ctx, cmp_idx);
+                    operand_i64(ctx, sig_idx);
+                    expression(ctx, ff, value)?;
+                    ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
+                },
+                Statement::Branch { condition, if_block, else_block } => {
+                    expression(ctx, ff, condition)?;
+
+                    let else_jump_offset = pre_emit_jump_if_false(&mut ctx.code);
+                    block(ctx, ff, if_block)?;
+
+                    let to = ctx.code.len();
+                    patch_jump(&mut ctx.code, else_jump_offset, to)?;
+
+                    let end_jump_offset = pre_emit_jump(&mut ctx.code);
+                    block(ctx, ff, else_block)?;
+
+                    let to = ctx.code.len();
+                    patch_jump(&mut ctx.code, end_jump_offset, to)?;
+                }
+                Statement::Error { code } => {
+                    operand_i64(ctx, code);
+                    ctx.code.push(OpCode::Error as u8);
                 }
             }
         }
-    }
+    };
+    Ok(())
 }
 
-fn compile_template<T>(t: &ast::Template) -> vm2::Template
+fn block<F>(
+    ctx: &mut TemplateCompilationContext, ff: &F,
+    instructions: &[ast::TemplateInstruction]) -> Result<(), Box<dyn Error>>
 where
-    T: FieldOps {
+    for <'a> &'a F: FieldOperations {
+
+    for inst in instructions {
+        instruction(ctx, ff, inst)?;
+    }
+
+    Ok(())
+}
+
+fn calc_jump_offset(from: usize, to: usize) -> Result<i32, CompilationError> {
+    let from: i64 = from.try_into()
+        .map_err(|_| CompilationError::JumpOffsetIsTooLarge)?;
+    let to: i64 = to.try_into()
+        .map_err(|_| CompilationError::JumpOffsetIsTooLarge)?;
+
+    (to - from).try_into()
+        .map_err(|_| CompilationError::JumpOffsetIsTooLarge)
+}
+
+
+/// We expect the jump offset located at `jump_offset_addr` to be 4 bytes long.
+/// The jump offset is calculated as `to - jump_offset_addr - 4`.
+fn patch_jump(
+    code: &mut [u8], jump_offset_addr: usize,
+    to: usize) -> Result<(), CompilationError> {
+
+    let offset = calc_jump_offset(jump_offset_addr + 4, to)?;
+    code[jump_offset_addr..jump_offset_addr+4].copy_from_slice(offset.to_le_bytes().as_ref());
+    Ok(())
+}
+
+
+fn pre_emit_jump_if_false(code: &mut Vec<u8>) -> usize {
+    code.push(OpCode::JumpIfFalse as u8);
+    for _ in 0..4 { code.push(0xffu8); }
+    code.len() - 4
+}
+
+fn pre_emit_jump(code: &mut Vec<u8>) -> usize {
+    code.push(OpCode::Jump as u8);
+    for _ in 0..4 { code.push(0xffu8); }
+    code.len() - 4
+}
+
+
+fn compile_template<F>(t: &ast::Template, ff: &F) -> Result<vm2::Template, Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations {
 
     let mut ctx = TemplateCompilationContext::new();
     for i in &t.body {
-        instruction::<T>(&mut ctx, i);
+        instruction(&mut ctx, ff, i)?;
     }
 
-    vm2::Template {
+    Ok(vm2::Template {
         name: t.name.clone(),
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use circom_witnesscalc::ast::{Assignment, Expr, FfOperand, I64Operand, TemplateInstruction};
+    use circom_witnesscalc::ast::{Assignment, FfExpr, I64Operand, TemplateInstruction};
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
 
@@ -532,34 +635,35 @@ mod tests {
                 TemplateInstruction::Assignment(
                     Assignment{
                         dest: "x_0".to_string(),
-                        value: Expr::GetSignal(I64Operand::Literal(1)),
+                        value: FfExpr::GetSignal(I64Operand::Literal(1)),
                     }
                 ),
                 TemplateInstruction::Assignment(
                     Assignment{
                         dest: "x_1".to_string(),
-                        value: Expr::GetSignal(I64Operand::Literal(2)),
+                        value: FfExpr::GetSignal(I64Operand::Literal(2)),
                     }
                 ),
                 TemplateInstruction::Assignment(
                     Assignment{
                         dest: "x_2".to_string(),
-                        value: Expr::FfMul(
-                            FfOperand::Variable("x_0".to_string()),
-                            FfOperand::Variable("x_1".to_string()))}),
+                        value: FfExpr::FfMul(
+                            Box::new(FfExpr::Variable("x_0".to_string())),
+                            Box::new(FfExpr::Variable("x_1".to_string())))}),
                 TemplateInstruction::Assignment(
                     Assignment{
                         dest: "x_3".to_string(),
-                        value: Expr::FfAdd(
-                            FfOperand::Variable("x_2".to_string()),
-                            FfOperand::Literal(BigUint::from(2u32)))}),
+                        value: FfExpr::FfAdd(
+                            Box::new(FfExpr::Variable("x_2".to_string())),
+                            Box::new(FfExpr::Literal(BigUint::from(2u32))))}),
                 TemplateInstruction::Statement(
                     Statement::SetSignal {
                         idx: I64Operand::Literal(0),
-                        value: FfOperand::Variable("x_3".to_string())})
+                        value: FfExpr::Variable("x_3".to_string())})
             ],
         };
-        let vm_tmpl = compile_template::<U254>(&ast_tmpl);
+        let ff = Field::new(bn254_prime);
+        let vm_tmpl = compile_template(&ast_tmpl, &ff).unwrap();
         disassemble::<U254>(&vec![vm_tmpl]);
     }
 

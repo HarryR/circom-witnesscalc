@@ -221,24 +221,29 @@ pub enum TemplateInstruction {
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub struct Assignment {
     pub dest: String,
-    pub value: Expr,
+    pub value: FfExpr,
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Statement {
-    SetSignal { idx: I64Operand, value: FfOperand }
+    SetSignal { idx: I64Operand, value: FfExpr },
+    SetCmpSignalRun {
+        cmp_idx: I64Operand,
+        sig_idx: I64Operand,
+        value: FfExpr
+    },
+    Error { code: I64Operand },
+    Branch {
+        condition: FfExpr,
+        if_block: Vec<TemplateInstruction>,
+        else_block: Vec<TemplateInstruction>
+    }
 }
 
-#[cfg_attr(test, derive(PartialEq, Debug))]
+#[cfg_attr(test, derive(PartialEq, Debug, Clone))]
 pub enum I64Operand {
     Variable(String),
     Literal(i64),
-}
-
-#[cfg_attr(test, derive(PartialEq, Debug))]
-pub enum FfOperand {
-    Variable(String),
-    Literal(BigUint),
 }
 
 pub enum UnoOp {
@@ -250,17 +255,24 @@ pub enum UnoOp {
 }
 
 
-#[cfg_attr(test, derive(PartialEq, Debug))]
-pub enum Expr {
+#[cfg_attr(test, derive(PartialEq, Debug, Clone))]
+pub enum FfExpr {
     GetSignal(I64Operand),
-    FfAdd(FfOperand, FfOperand),
-    FfMul(FfOperand, FfOperand),
-    FfNeq(FfOperand, FfOperand),
+    GetCmpSignal{ cmp_idx: I64Operand, sig_idx: I64Operand },
+    FfAdd(Box<FfExpr>, Box<FfExpr>),
+    FfMul(Box<FfExpr>, Box<FfExpr>),
+    FfNeq(Box<FfExpr>, Box<FfExpr>),
+    FfDiv(Box<FfExpr>, Box<FfExpr>),
+    FfSub(Box<FfExpr>, Box<FfExpr>),
+    FfEq(Box<FfExpr>, Box<FfExpr>),
+    FfEqz(Box<FfExpr>),
+    Variable(String),
+    Literal(BigUint),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Signal {
-    Ff(Vec<usize>),         // dimensions
+    Ff(Vec<usize>),          // dimensions
     Bus(String, Vec<usize>), // bus name and dimensions
 }
 

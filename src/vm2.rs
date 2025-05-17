@@ -1,35 +1,57 @@
 use std::collections::HashMap;
 use std::error::Error;
-use crate::field::{FieldOperations, FieldOps};
+use crate::field::{Field, FieldOperations, FieldOps};
 
 #[repr(u8)]
 #[derive(Debug)]
 pub enum OpCode {
-    NoOp = 0,
+    NoOp                 = 0,
     // Put signals to the stack
     // required stack_i64: signal index
-    LoadSignal      = 1,
+    LoadSignal           = 1,
     // Store the signal
     // stack_ff contains the value to store
     // stack_i64 contains the signal index
-    StoreSignal     = 2,
-    PushI64         = 3, // Push i64 value to the stack
-    PushFf          = 4, // Push ff value to the stack
+    StoreSignal          = 2,
+    PushI64              = 3, // Push i64 value to the stack
+    PushFf               = 4, // Push ff value to the stack
     // Set variables from the stack
     // arguments:      offset from the base pointer
     // required stack: values to store equal to variables number from arguments
-    StoreVariableFf = 5,
-    LoadVariableI64 = 6,
-    LoadVariableFf  = 7,
-    OpMul           = 8,
-    OpAdd           = 9,
-    OpNeq           = 10,
+    StoreVariableFf      = 5,
+    LoadVariableI64      = 6,
+    LoadVariableFf       = 7,
+    // Jump to the instruction
+    // arguments:      4 byte LE offset to jump
+    // required stack: the ff value to check for failure
+    JumpIfFalse          = 8,
+    // Jump to the instruction
+    // arguments:      4 byte LE offset to jump
+    Jump                 = 9,
+    // stack_i64 contains the error code
+    Error                = 10,
+    // Get the component signal and put it to the stack_ff
+    // stack_i64:0 contains the signal index
+    // stack_i64:-1 contains the component index
+    LoadCmpSignal        = 11,
+    // Store the component signal and run
+    // stack_ff contains the value to store
+    // stack_i64:0 contains the signal index
+    // stack_i64:-1 contains the component index
+    StoreCmpSignalAndRun = 12,
+    OpMul                = 13,
+    OpAdd                = 14,
+    OpNeq                = 15,
+    OpDiv                = 16,
+    OpSub                = 17,
+    OpEq                 = 18,
+    OpEqz                = 19,
 }
 
 pub struct Circuit<T: FieldOps> {
     pub main_template_id: usize,
     pub templates: Vec<Template>,
-    pub prime: T,
+    pub field: Field<T>,
     pub witness: Vec<usize>,
     pub input_signals_info: HashMap<String, usize>,
     pub signals_num: usize,
@@ -171,6 +193,22 @@ where
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
             println!("LoadVariableFf: {}", var_idx);
         }
+        OpCode::JumpIfFalse => {
+            let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
+            ip += size_of::<i32>();
+            println!("JumpIfFalse: {}", v);
+        }
+        OpCode::Jump => {
+            let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
+            ip += size_of::<i32>();
+            println!("Jump: {}", v);
+        }
+        OpCode::LoadCmpSignal => {
+            println!("LoadCmpSignal");
+        }
+        OpCode::StoreCmpSignalAndRun => {
+            println!("StoreCmpSignalAndRun");
+        }
         OpCode::OpMul => {
             println!("OpMul");
         }
@@ -179,6 +217,21 @@ where
         }
         OpCode::OpNeq => {
             println!("OpNeq");
+        }
+        OpCode::OpDiv => {
+            println!("OpDiv");
+        }
+        OpCode::OpSub => {
+            println!("OpSub");
+        }
+        OpCode::OpEq => {
+            println!("OpEq");
+        }
+        OpCode::OpEqz => {
+            println!("OpEqz");
+        }
+        OpCode::Error => {
+            println!("Error");
         }
     }
 
@@ -282,6 +335,33 @@ pub fn execute<F: FieldOperations>(
                 let lhs = vm.pop_ff()?;
                 let rhs = vm.pop_ff()?;
                 vm.push_ff(ff.neq(lhs, rhs));
+            }
+            OpCode::LoadCmpSignal => {
+                todo!()
+            }
+            OpCode::StoreCmpSignalAndRun => {
+                todo!()
+            }
+            OpCode::JumpIfFalse => {
+                todo!()
+            }
+            OpCode::Error => {
+                todo!()
+            }
+            OpCode::Jump => {
+                todo!()
+            }
+            OpCode::OpDiv => {
+                todo!()
+            }
+            OpCode::OpSub => {
+                todo!()
+            }
+            OpCode::OpEq => {
+                todo!()
+            }
+            OpCode::OpEqz => {
+                todo!()
             }
         }
     }
