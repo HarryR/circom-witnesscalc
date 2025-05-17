@@ -48,6 +48,13 @@ pub enum OpCode {
     OpEqz                = 19,
 }
 
+pub struct Component {
+    pub signals_start: usize,
+    pub template_id: usize,
+    pub omponents: Vec<Option<Box<Component>>>,
+    pub number_of_inputs: usize,
+}
+
 pub struct Circuit<T: FieldOps> {
     pub main_template_id: usize,
     pub templates: Vec<Template>,

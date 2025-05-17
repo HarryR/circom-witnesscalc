@@ -11,7 +11,7 @@ use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
 use circom_witnesscalc::ast::{Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
-use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, OpCode};
+use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
 
 struct WantWtns {
     wtns_file: String,
@@ -148,9 +148,13 @@ fn main() {
     if program.prime == bn254 {
         let ff = Field::new(bn254_prime);
         let circuit = compile(&ff, &program, &args.sym_file).unwrap();
+        let mut component_tree = build_component_tree(
+            &program.templates, circuit.main_template_id);
         disassemble::<U254>(&circuit.templates);
         if args.want_wtns.is_some() {
-            calculate_witness(&circuit, args.want_wtns.unwrap()).unwrap();
+            calculate_witness(
+                &circuit, &mut component_tree, args.want_wtns.unwrap())
+                .unwrap();
         }
     } else {
         eprintln!("ERROR: Unsupported prime field");
@@ -195,7 +199,47 @@ fn input_signals_info(
     Ok(m)
 }
 
-fn calculate_witness<T: FieldOps>(circuit: &Circuit<T>, want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
+/// Create a component tree and returns the component and the number of signals
+/// of self and all its children
+fn create_component(
+    templates: &[ast::Template], template_id: usize,
+    signal_start: usize) -> (Component, usize) {
+
+    let t = &templates[template_id];
+    let mut next_signal_start = signal_start + t.signals_num;
+    let mut components = Vec::with_capacity(t.components.len());
+    for cmp_tmpl_id in t.components.iter() {
+        components.push(match cmp_tmpl_id {
+            None => None,
+            Some( tmpl_id ) => {
+                let (c, signals_num) = create_component(
+                    templates, *tmpl_id, next_signal_start);
+                next_signal_start += signals_num;
+                Some(Box::new(c))
+            }
+        });
+    }
+    (
+        Component {
+            signals_start: signal_start,
+            template_id: template_id,
+            omponents: components,
+            number_of_inputs: t.outputs.len(),
+        },
+        next_signal_start - signal_start
+    )
+}
+
+fn build_component_tree(
+    templates: &[ast::Template], main_template_id: usize) -> Component {
+
+    create_component(templates, main_template_id, 1).0
+}
+
+fn calculate_witness<T: FieldOps>(
+    circuit: &Circuit<T>, component_tree: &mut Component,
+    want_wtns: WantWtns) -> Result<(), Box<dyn Error>> {
+
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.input_signals_info)?;
@@ -614,13 +658,138 @@ where
 
 #[cfg(test)]
 mod tests {
-    use circom_witnesscalc::ast::{Assignment, FfExpr, I64Operand, TemplateInstruction};
+    use circom_witnesscalc::ast::{Assignment, FfExpr, I64Operand, TemplateInstruction, Signal};
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
 
     #[test]
     fn test_example() {
         assert!(true);
+    }
+
+    #[test]
+    fn test_build_component_tree() {
+        // Create leaf templates with no components
+        let template1 = ast::Template {
+            name: "Leaf1".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 3,
+            components: vec![],
+            body: vec![],
+        };
+
+        let template2 = ast::Template {
+            name: "Leaf2".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 3,
+            components: vec![],
+            body: vec![],
+        };
+
+        let template3 = ast::Template {
+            name: "Leaf3".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 3,
+            components: vec![],
+            body: vec![],
+        };
+
+        let template4 = ast::Template {
+            name: "Leaf4".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 3,
+            components: vec![],
+            body: vec![],
+        };
+
+        // Create middle-level templates, each with two children
+        // First middle template has two children
+        let template5 = ast::Template {
+            name: "Middle1".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 4,
+            components: vec![Some(0), Some(1)], // References to template1 and template2
+            body: vec![],
+        };
+
+        // Second middle template has one child and one None
+        let template6 = ast::Template {
+            name: "Middle2".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 4,
+            components: vec![Some(2), None, Some(3)], // References to template3, None, and template4
+            body: vec![],
+        };
+
+        // Create root template with two children
+        let template7 = ast::Template {
+            name: "Root".to_string(),
+            outputs: vec![Signal::Ff(vec![1])],
+            inputs: vec![Signal::Ff(vec![1])],
+            signals_num: 5,
+            components: vec![Some(4), Some(5)], // References to template5 and template6
+            body: vec![],
+        };
+
+        let templates = vec![template1, template2, template3, template4, template5, template6, template7];
+
+        // Build component tree with template7 (Root) as the main template
+        let component_tree = build_component_tree(&templates, 6);
+
+        // Verify the structure of the root component
+        assert_eq!(component_tree.signals_start, 1);
+        assert_eq!(component_tree.template_id, 6);
+        assert_eq!(component_tree.number_of_inputs, 1);
+        assert_eq!(component_tree.omponents.len(), 2);
+
+        // Verify the first child component (Middle1)
+        let middle1 = component_tree.omponents[0].as_ref().unwrap();
+        assert_eq!(middle1.signals_start, 6); // 1 (start) + 5 (signals_num of root)
+        assert_eq!(middle1.template_id, 4);
+        assert_eq!(middle1.number_of_inputs, 1);
+        assert_eq!(middle1.omponents.len(), 2);
+
+        // Verify the second child component (Middle2)
+        let middle2 = component_tree.omponents[1].as_ref().unwrap();
+        assert_eq!(middle2.signals_start, 16); // 6 (start of middle1) + 4 (signals_num of middle1) + 3 (signals_num of leaf1) + 3 (signals_num of leaf2)
+        assert_eq!(middle2.template_id, 5);
+        assert_eq!(middle2.number_of_inputs, 1);
+        assert_eq!(middle2.omponents.len(), 3);
+
+        // Verify Middle2 has a None component
+        assert!(middle2.omponents[1].is_none());
+
+        // Verify the leaf components of Middle1
+        let leaf1 = middle1.omponents[0].as_ref().unwrap();
+        assert_eq!(leaf1.signals_start, 10); // 6 (start of middle1) + 4 (signals_num of middle1)
+        assert_eq!(leaf1.template_id, 0);
+        assert_eq!(leaf1.number_of_inputs, 1);
+        assert_eq!(leaf1.omponents.len(), 0);
+
+        let leaf2 = middle1.omponents[1].as_ref().unwrap();
+        assert_eq!(leaf2.signals_start, 13); // 10 (start of leaf1) + 3 (signals_num of leaf1)
+        assert_eq!(leaf2.template_id, 1);
+        assert_eq!(leaf2.number_of_inputs, 1);
+        assert_eq!(leaf2.omponents.len(), 0);
+
+        // Verify the leaf components of Middle2
+        let leaf3 = middle2.omponents[0].as_ref().unwrap();
+        assert_eq!(leaf3.signals_start, 20); // 16 (start of middle2) + 4 (signals_num of middle2)
+        assert_eq!(leaf3.template_id, 2);
+        assert_eq!(leaf3.number_of_inputs, 1);
+        assert_eq!(leaf3.omponents.len(), 0);
+
+        let leaf4 = middle2.omponents[2].as_ref().unwrap();
+        assert_eq!(leaf4.signals_start, 23); // 20 (start of leaf3) + 3 (signals_num of leaf3)
+        assert_eq!(leaf4.template_id, 3);
+        assert_eq!(leaf4.number_of_inputs, 1);
+        assert_eq!(leaf4.omponents.len(), 0);
     }
 
     #[test]
