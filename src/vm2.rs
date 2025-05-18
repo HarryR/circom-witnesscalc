@@ -246,34 +246,33 @@ where
 }
 
 pub fn execute<F: FieldOperations>(
-    templates: &[Template], signals: &mut [Option<F::Type>],
-    main_template_id: usize, ff: F) -> Result<(), Box<dyn Error>> {
+    templates: &[Template], signals: &mut [Option<F::Type>], ff: F,
+    component_tree: &mut Component) -> Result<(), Box<dyn Error>> {
 
     let mut ip: usize = 0;
     let mut vm = VM::<F::Type>::new();
     vm.stack_ff.resize_with(
-        templates[main_template_id].vars_ff_num, || None);
+        templates[component_tree.template_id].vars_ff_num, || None);
     vm.stack_i64.resize_with(
-        templates[main_template_id].vars_i64_num, || None);
-    let template_signals_start = 1usize;
+        templates[component_tree.template_id].vars_i64_num, || None);
 
     'label: loop {
-        if ip == templates[main_template_id].code.len() {
+        if ip == templates[component_tree.template_id].code.len() {
             break 'label;
         }
 
         disassemble_instruction::<F::Type>(
-            &templates[main_template_id].code, ip,
-            &templates[main_template_id].name);
+            &templates[component_tree.template_id].code, ip,
+            &templates[component_tree.template_id].name);
 
         let op_code = read_instruction(
-            &templates[main_template_id].code, ip);
+            &templates[component_tree.template_id].code, ip);
         ip += 1;
 
         match op_code {
             OpCode::NoOp => (),
             OpCode::LoadSignal => {
-                let signal_idx = template_signals_start + vm.pop_usize()?;
+                let signal_idx = component_tree.signals_start + vm.pop_usize()?;
                 let s = signals.get(signal_idx)
                     .ok_or(RuntimeError::SignalIndexOutOfBounds)?
                     .ok_or(RuntimeError::SignalIsNotSet)?;
@@ -281,7 +280,7 @@ pub fn execute<F: FieldOperations>(
                 vm.push_ff(s);
             }
             OpCode::StoreSignal => {
-                let signal_idx = template_signals_start + vm.pop_usize()?;
+                let signal_idx = component_tree.signals_start + vm.pop_usize()?;
                 if signal_idx >= signals.len() {
                     return Err(Box::new(RuntimeError::SignalIndexOutOfBounds));
                 }
@@ -293,12 +292,12 @@ pub fn execute<F: FieldOperations>(
             OpCode::PushI64 => {
                 vm.push_i64(
                     i64::from_le_bytes(
-                        (&templates[main_template_id].code[ip..ip+8])
+                        (&templates[component_tree.template_id].code[ip..ip+8])
                             .try_into().unwrap()));
                 ip += 8;
             }
             OpCode::PushFf => {
-                let s = &templates[main_template_id]
+                let s = &templates[component_tree.template_id]
                     .code[ip..ip+F::Type::BYTES];
                 ip += F::Type::BYTES;
                 let v = ff.parse_le_bytes(s)?;
@@ -307,7 +306,7 @@ pub fn execute<F: FieldOperations>(
             OpCode::StoreVariableFf => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
-                    &templates[main_template_id].code, ip)?;
+                    &templates[component_tree.template_id].code, ip)?;
                 let value = vm.pop_ff()?;
                 vm.stack_ff[vm.base_pointer_ff + var_idx] = Some(value);
             }
@@ -317,7 +316,7 @@ pub fn execute<F: FieldOperations>(
             OpCode::LoadVariableFf => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
-                    &templates[main_template_id].code, ip)?;
+                    &templates[component_tree.template_id].code, ip)?;
                 let var = match vm.stack_ff.get(vm.base_pointer_ff + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),

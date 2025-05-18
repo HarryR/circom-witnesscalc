@@ -243,9 +243,7 @@ fn calculate_witness<T: FieldOps>(
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.input_signals_info)?;
-    execute(
-        &circuit.templates, &mut signals, circuit.main_template_id,
-        &circuit.field)?;
+    execute(&circuit.templates, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
         &signals, &circuit.witness, circuit.field.prime)?;
 
