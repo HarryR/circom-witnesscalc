@@ -203,10 +203,10 @@ fn input_signals_info(
 /// of self and all its children
 fn create_component(
     templates: &[ast::Template], template_id: usize,
-    signal_start: usize) -> (Component, usize) {
+    signals_start: usize) -> (Component, usize) {
 
     let t = &templates[template_id];
-    let mut next_signal_start = signal_start + t.signals_num;
+    let mut next_signal_start = signals_start + t.signals_num;
     let mut components = Vec::with_capacity(t.components.len());
     for cmp_tmpl_id in t.components.iter() {
         components.push(match cmp_tmpl_id {
@@ -221,12 +221,12 @@ fn create_component(
     }
     (
         Component {
-            signals_start: signal_start,
-            template_id: template_id,
-            omponents: components,
+            signals_start,
+            template_id,
+            components,
             number_of_inputs: t.outputs.len(),
         },
-        next_signal_start - signal_start
+        next_signal_start - signals_start
     )
 }
 
@@ -744,50 +744,50 @@ mod tests {
         assert_eq!(component_tree.signals_start, 1);
         assert_eq!(component_tree.template_id, 6);
         assert_eq!(component_tree.number_of_inputs, 1);
-        assert_eq!(component_tree.omponents.len(), 2);
+        assert_eq!(component_tree.components.len(), 2);
 
         // Verify the first child component (Middle1)
-        let middle1 = component_tree.omponents[0].as_ref().unwrap();
+        let middle1 = component_tree.components[0].as_ref().unwrap();
         assert_eq!(middle1.signals_start, 6); // 1 (start) + 5 (signals_num of root)
         assert_eq!(middle1.template_id, 4);
         assert_eq!(middle1.number_of_inputs, 1);
-        assert_eq!(middle1.omponents.len(), 2);
+        assert_eq!(middle1.components.len(), 2);
 
         // Verify the second child component (Middle2)
-        let middle2 = component_tree.omponents[1].as_ref().unwrap();
+        let middle2 = component_tree.components[1].as_ref().unwrap();
         assert_eq!(middle2.signals_start, 16); // 6 (start of middle1) + 4 (signals_num of middle1) + 3 (signals_num of leaf1) + 3 (signals_num of leaf2)
         assert_eq!(middle2.template_id, 5);
         assert_eq!(middle2.number_of_inputs, 1);
-        assert_eq!(middle2.omponents.len(), 3);
+        assert_eq!(middle2.components.len(), 3);
 
         // Verify Middle2 has a None component
-        assert!(middle2.omponents[1].is_none());
+        assert!(middle2.components[1].is_none());
 
         // Verify the leaf components of Middle1
-        let leaf1 = middle1.omponents[0].as_ref().unwrap();
+        let leaf1 = middle1.components[0].as_ref().unwrap();
         assert_eq!(leaf1.signals_start, 10); // 6 (start of middle1) + 4 (signals_num of middle1)
         assert_eq!(leaf1.template_id, 0);
         assert_eq!(leaf1.number_of_inputs, 1);
-        assert_eq!(leaf1.omponents.len(), 0);
+        assert_eq!(leaf1.components.len(), 0);
 
-        let leaf2 = middle1.omponents[1].as_ref().unwrap();
+        let leaf2 = middle1.components[1].as_ref().unwrap();
         assert_eq!(leaf2.signals_start, 13); // 10 (start of leaf1) + 3 (signals_num of leaf1)
         assert_eq!(leaf2.template_id, 1);
         assert_eq!(leaf2.number_of_inputs, 1);
-        assert_eq!(leaf2.omponents.len(), 0);
+        assert_eq!(leaf2.components.len(), 0);
 
         // Verify the leaf components of Middle2
-        let leaf3 = middle2.omponents[0].as_ref().unwrap();
+        let leaf3 = middle2.components[0].as_ref().unwrap();
         assert_eq!(leaf3.signals_start, 20); // 16 (start of middle2) + 4 (signals_num of middle2)
         assert_eq!(leaf3.template_id, 2);
         assert_eq!(leaf3.number_of_inputs, 1);
-        assert_eq!(leaf3.omponents.len(), 0);
+        assert_eq!(leaf3.components.len(), 0);
 
-        let leaf4 = middle2.omponents[2].as_ref().unwrap();
+        let leaf4 = middle2.components[2].as_ref().unwrap();
         assert_eq!(leaf4.signals_start, 23); // 20 (start of leaf3) + 3 (signals_num of leaf3)
         assert_eq!(leaf4.template_id, 3);
         assert_eq!(leaf4.number_of_inputs, 1);
-        assert_eq!(leaf4.omponents.len(), 0);
+        assert_eq!(leaf4.components.len(), 0);
     }
 
     #[test]

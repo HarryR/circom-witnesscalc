@@ -51,7 +51,7 @@ pub enum OpCode {
 pub struct Component {
     pub signals_start: usize,
     pub template_id: usize,
-    pub omponents: Vec<Option<Box<Component>>>,
+    pub components: Vec<Option<Box<Component>>>,
     pub number_of_inputs: usize,
 }
 
@@ -93,6 +93,10 @@ pub enum RuntimeError {
     SignalIsAlreadySet,
     #[error("Code index is out of bounds")]
     CodeIndexOutOfBounds,
+    #[error("component is not initialized")]
+    UninitializedComponent,
+    #[error("assertion: {0}")]
+    Assertion(i64),
 }
 
 struct VM<T: FieldOps> {
@@ -245,12 +249,14 @@ where
     ip
 }
 
-pub fn execute<F: FieldOperations>(
-    templates: &[Template], signals: &mut [Option<F::Type>], ff: F,
-    component_tree: &mut Component) -> Result<(), Box<dyn Error>> {
+pub fn execute<F, T: FieldOps>(
+    templates: &[Template], signals: &mut [Option<T>], ff: &F,
+    component_tree: &mut Component) -> Result<(), Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations<Type = T> {
 
     let mut ip: usize = 0;
-    let mut vm = VM::<F::Type>::new();
+    let mut vm = VM::<T>::new();
     vm.stack_ff.resize_with(
         templates[component_tree.template_id].vars_ff_num, || None);
     vm.stack_i64.resize_with(
@@ -261,7 +267,7 @@ pub fn execute<F: FieldOperations>(
             break 'label;
         }
 
-        disassemble_instruction::<F::Type>(
+        disassemble_instruction::<T>(
             &templates[component_tree.template_id].code, ip,
             &templates[component_tree.template_id].name);
 
@@ -298,8 +304,8 @@ pub fn execute<F: FieldOperations>(
             }
             OpCode::PushFf => {
                 let s = &templates[component_tree.template_id]
-                    .code[ip..ip+F::Type::BYTES];
-                ip += F::Type::BYTES;
+                    .code[ip..ip+T::BYTES];
+                ip += T::BYTES;
                 let v = ff.parse_le_bytes(s)?;
                 vm.push_ff(v);
             }
@@ -343,31 +349,84 @@ pub fn execute<F: FieldOperations>(
                 vm.push_ff(ff.neq(lhs, rhs));
             }
             OpCode::LoadCmpSignal => {
-                todo!()
+                let sig_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                vm.push_ff(match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(
+                            Box::new(RuntimeError::UninitializedComponent))
+                    }
+                    Some(ref c) => {
+                        signals[c.signals_start + sig_idx].ok_or(RuntimeError::SignalIsNotSet)?
+                    }
+                });
             }
             OpCode::StoreCmpSignalAndRun => {
-                todo!()
+                let sig_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                let value = vm.pop_ff()?;
+                match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(
+                            Box::new(RuntimeError::UninitializedComponent))
+                    }
+                    Some(ref mut c) => {
+                        signals[c.signals_start + sig_idx] = Some(value);
+                        c.number_of_inputs -= 1;
+                        execute(templates, signals, ff, c)?;
+                    }
+                }
             }
             OpCode::JumpIfFalse => {
-                todo!()
+                let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
+                ip += size_of::<i32>();
+
+                if vm.pop_ff()?.is_zero() {
+                    if offset < 0 {
+                        ip -= offset.unsigned_abs() as usize;
+                    } else {
+                        ip += offset as usize;
+                    }
+                }
             }
             OpCode::Error => {
-                todo!()
+                let error_code = vm.pop_i64()?;
+                return Err(Box::new(RuntimeError::Assertion(error_code)));
             }
             OpCode::Jump => {
-                todo!()
+                let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
+                ip += size_of::<i32>();
+
+                if offset < 0 {
+                    ip -= offset.unsigned_abs() as usize;
+                } else {
+                    ip += offset as usize;
+                }
             }
             OpCode::OpDiv => {
-                todo!()
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.div(lhs, rhs));
             }
             OpCode::OpSub => {
-                todo!()
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.sub(lhs, rhs));
             }
             OpCode::OpEq => {
-                todo!()
+                let lhs = vm.pop_ff()?;
+                let rhs = vm.pop_ff()?;
+                vm.push_ff(ff.eq(lhs, rhs));
             }
             OpCode::OpEqz => {
-                todo!()
+                let arg = vm.pop_ff()?;
+                if arg.is_zero() {
+                    vm.push_ff(T::one());
+                } else {
+                    vm.push_ff(T::zero());
+                }
             }
         }
     }
