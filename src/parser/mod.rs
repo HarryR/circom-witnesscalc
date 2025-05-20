@@ -213,6 +213,10 @@ fn parse_template_body(input: &mut &str) -> ModalResult<Vec<TemplateInstruction>
 }
 
 fn parse_assignment(input: &mut &str) -> ModalResult<Assignment> {
+    alt((parse_spr_assignment, parse_var_assignment)).parse_next(input)
+}
+
+fn parse_var_assignment(input: &mut &str) -> ModalResult<Assignment> {
     let (var_name, _, _, _, expr, _, _, _) = seq!(
         parse_variable_name,
         space0, literal("="), space0,
@@ -226,6 +230,19 @@ fn parse_assignment(input: &mut &str) -> ModalResult<Assignment> {
     Ok(Assignment{
         dest: var_name.to_string(),
         value: expr,
+    })
+}
+
+fn parse_spr_assignment(input: &mut &str) -> ModalResult<Assignment> {
+    let (_, _, _, _, ds, _, _, _) = seq!(
+        "spr", space0, literal("="), space0,
+        cut_err(digit1)
+            .context(StrContext::Label("spr assignment"))
+            .context(StrContext::Expected(StrContextValue::Description("valid spr assignment"))),
+        space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
+    Ok(Assignment{
+        dest: "spr".to_string(),
+        value: FfExpr::Literal(ds.parse::<BigUint>().unwrap()),
     })
 }
 
@@ -493,7 +510,7 @@ mod tests {
     use num_traits::Num;
     use num_bigint::BigUint;
     use winnow::error::{ContextError};
-    use crate::parser::{parse_assignment, parse_ast, parse_bus_signal, parse_eol_comment, parse_expression, parse_ff_signal, parse_i64_literal, parse_i64_operand, parse_operator_name, parse_prime, parse_statement, parse_template, parse_template_body, parse_variable_name};
+    use crate::parser::{parse_var_assignment, parse_ast, parse_bus_signal, parse_eol_comment, parse_expression, parse_ff_signal, parse_i64_literal, parse_i64_operand, parse_operator_name, parse_prime, parse_statement, parse_template, parse_template_body, parse_variable_name};
     use winnow::{Parser};
     use winnow::token::{take_till};
     use crate::ast::{Assignment, ComponentsMode, FfExpr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
@@ -648,18 +665,18 @@ expected valid i64 value";
             dest: "x_4".to_string(),
             value: get_signal("2"),
         };
-        let a = parse_assignment.parse(&mut input).unwrap();
+        let a = parse_var_assignment.parse(&mut input).unwrap();
         assert_eq!(a, want);
 
         let mut input = "x_4 = get_signal i64.2 2";
-        assert!(parse_assignment.parse_next(&mut input).is_err());
+        assert!(parse_var_assignment.parse_next(&mut input).is_err());
 
         let mut input = "x_4 = get_signal i64.2\nxxx";
         let want = Assignment{
             dest: "x_4".to_string(),
             value: get_signal("2"),
         };
-        let a = parse_assignment.parse_next(&mut input).unwrap();
+        let a = parse_var_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
         assert_eq!(input, "xxx");
 
@@ -668,7 +685,7 @@ expected valid i64 value";
             dest: "x_4".to_string(),
             value: get_signal("2"),
         };
-        let a = parse_assignment.parse_next(&mut input).unwrap();
+        let a = parse_var_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
         assert_eq!(input, "xxx");
 
@@ -677,7 +694,7 @@ expected valid i64 value";
             dest: "x_4".to_string(),
             value: get_signal("2"),
         };
-        let a = parse_assignment.parse_next(&mut input).unwrap();
+        let a = parse_var_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
         assert_eq!(input, "xxx");
 
@@ -689,7 +706,7 @@ x_2 = ff.mul x_0 x_1";
             dest: "x_1".to_string(),
             value: get_signal("2"),
         };
-        let a = parse_assignment.parse_next(&mut input).unwrap();
+        let a = parse_var_assignment.parse_next(&mut input).unwrap();
         assert_eq!(a, want);
         let want_left = ";; OP(MUL)
 x_2 = ff.mul x_0 x_1";

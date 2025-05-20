@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -eu
+set -eux
 
 required_commands=(circom snarkjs cargo node cmp)
 

@@ -454,6 +454,46 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
         }
     }
 
+    fn op_uno(&self, op: UnoOperation, a: T) -> T {
+        match op {
+            UnoOperation::Neg => self.neg(a),
+            UnoOperation::Id => a,
+            UnoOperation::Lnot => self.lnot(a),
+            UnoOperation::Bnot => self.bnot(a),
+        }
+    }
+
+    fn op_duo(&self, op: Operation, a: T, b: T) -> T {
+        match op {
+            Operation::Mul => self.mul(a, b),
+            Operation::Div => self.div(a, b),
+            Operation::Add => self.add(a, b),
+            Operation::Sub => self.sub(a, b),
+            Operation::Pow => self.pow(a, b),
+            Operation::Idiv => self.idiv(a, b),
+            Operation::Mod => self.modulo(a, b),
+            Operation::Eq => self.eq(a, b),
+            Operation::Neq => self.neq(a, b),
+            Operation::Lt => self.lt(a, b),
+            Operation::Gt => self.gt(a, b),
+            Operation::Leq => self.lte(a, b),
+            Operation::Geq => self.gte(a, b),
+            Operation::Land => self.land(a, b),
+            Operation::Lor => self.lor(a, b),
+            Operation::Shl => self.shl(a, b),
+            Operation::Shr => self.shr(a, b),
+            Operation::Bor => self.bor(a, b),
+            Operation::Band => self.band(a, b),
+            Operation::Bxor => self.bxor(a, b),
+        }
+    }
+
+    fn op_tres(&self, op: TresOperation, a: T, b: T, c: T) -> T {
+        match op {
+            TresOperation::TernCond => if a.is_zero() { c } else { b }
+        }
+    }
+
     #[inline]
     fn mul(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
         lhs.mul_mod(rhs, self.prime)
@@ -573,6 +613,15 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
     }
 
     #[inline]
+    fn lnot(&self, lhs: Self::Type) -> Self::Type {
+        if lhs.is_zero() {
+            T::one()
+        } else {
+            T::zero()
+        }
+    }
+
+    #[inline]
     fn shl(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
         match self.to_isize(rhs) {
             Some(r) => {
@@ -636,16 +685,6 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
             r
         }
     }
-
-    #[inline]
-    fn idiv(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
-        if rhs.is_zero() {
-            T::zero()
-        } else {
-            lhs / rhs
-        }
-    }
-
     #[inline]
     fn bnot(&self, lhs: Self::Type) -> Self::Type {
         let lhs = lhs.not();
@@ -658,59 +697,20 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
     }
 
     #[inline]
+    fn idiv(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
+        if rhs.is_zero() {
+            T::zero()
+        } else {
+            lhs / rhs
+        }
+    }
+
+    #[inline]
     fn neg(&self, lhs: Self::Type) -> Self::Type {
         if lhs.is_zero() {
             T::zero()
         } else {
             self.prime - lhs
-        }
-    }
-
-    #[inline]
-    fn lnot(&self, lhs: Self::Type) -> Self::Type {
-        if lhs.is_zero() {
-            T::one()
-        } else {
-            T::zero()
-        }
-    }
-    fn op_uno(&self, op: UnoOperation, a: T) -> T {
-        match op {
-            UnoOperation::Neg => self.neg(a),
-            UnoOperation::Id => a,
-            UnoOperation::Lnot => self.lnot(a),
-            UnoOperation::Bnot => self.bnot(a),
-        }
-    }
-
-    fn op_duo(&self, op: Operation, a: T, b: T) -> T {
-        match op {
-            Operation::Mul => self.mul(a, b),
-            Operation::Div => self.div(a, b),
-            Operation::Add => self.add(a, b),
-            Operation::Sub => self.sub(a, b),
-            Operation::Pow => self.pow(a, b),
-            Operation::Idiv => self.idiv(a, b),
-            Operation::Mod => self.modulo(a, b),
-            Operation::Eq => self.eq(a, b),
-            Operation::Neq => self.neq(a, b),
-            Operation::Lt => self.lt(a, b),
-            Operation::Gt => self.gt(a, b),
-            Operation::Leq => self.lte(a, b),
-            Operation::Geq => self.gte(a, b),
-            Operation::Land => self.land(a, b),
-            Operation::Lor => self.lor(a, b),
-            Operation::Shl => self.shl(a, b),
-            Operation::Shr => self.shr(a, b),
-            Operation::Bor => self.bor(a, b),
-            Operation::Band => self.band(a, b),
-            Operation::Bxor => self.bxor(a, b),
-        }
-    }
-
-    fn op_tres(&self, op: TresOperation, a: T, b: T, c: T) -> T {
-        match op {
-            TresOperation::TernCond => if a.is_zero() { c } else { b }
         }
     }
 }
