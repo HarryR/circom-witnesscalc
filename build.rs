@@ -36,19 +36,21 @@ fn main() -> Result<()> {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
-    
+
     Ok(())
 }
 
 fn setup_android_environment() {
-    
+
     // maybe this is useful for build on Linux, need to check someday.
     // println!("cargo:rustc-link-arg=-Wl,-soname,libcircom_witnesscalc.so");
-    
+
     println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libcircom_witnesscalc.so");
 
     let target = std::env::var("TARGET")
         .expect("TARGET environment variable is not set");
+
+    let linker_env = get_linker_env_var(&target);
 
     let cc_target = format!("CC_{}", target);
     // println!("cargo:warning=Looking for target-specific compiler: {}", cc_target);
@@ -62,13 +64,13 @@ fn setup_android_environment() {
 
     let cc_missing = std::env::var("CC").is_err();
     let clang_path_missing = std::env::var("CLANG_PATH").is_err();
-    let linker_missing = std::env::var("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER").is_err();
+    let linker_missing = std::env::var(&linker_env).is_err();
 
     if cc_missing || clang_path_missing || linker_missing {
         let mut missing_vars = Vec::new();
         if cc_missing { missing_vars.push("CC"); }
         if clang_path_missing { missing_vars.push("CLANG_PATH"); }
-        if linker_missing { missing_vars.push("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"); }
+        if linker_missing { missing_vars.push(&linker_env); }
 
         let missing = missing_vars.join(" and ");
 
@@ -81,4 +83,10 @@ fn setup_android_environment() {
     }
 
     // println!("cargo:warning=Using existing CC and CLANG_PATH environment variables");
+}
+
+fn get_linker_env_var(target: &str) -> String {
+    let upper_target = target.to_uppercase();
+    let formatted_target = upper_target.replace('-', "_");
+    format!("CARGO_TARGET_{}_LINKER", formatted_target)
 }
