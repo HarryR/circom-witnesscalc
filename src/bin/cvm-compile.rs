@@ -8,7 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
-use circom_witnesscalc::ast::{Statement};
+use circom_witnesscalc::ast::{Statement, TemplateInstruction};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
@@ -544,7 +544,7 @@ where
     for <'a> &'a F: FieldOperations {
 
     match inst {
-        ast::TemplateInstruction::Assignment(assignment) => {
+        ast::TemplateInstruction::FfAssignment(assignment) => {
             expression(ctx, ff, &assignment.value)?;
             ctx.code.push(OpCode::StoreVariableFf as u8);
             let var_idx = ctx.get_ff_variable_index(&assignment.dest);
@@ -577,12 +577,34 @@ where
 
                     let to = ctx.code.len();
                     patch_jump(&mut ctx.code, end_jump_offset, to)?;
-                }
+                },
+                Statement::Loop( .. ) => {
+                    // // Start of loop
+                    // let loop_start = ctx.code.len();
+                    //
+                    // // Compile loop body
+                    // block(ctx, ff, instructions)?;
+                    //
+                    // // Jump back to start of loop
+                    // ctx.code.push(OpCode::Jump as u8);
+                    // let offset = calc_jump_offset(ctx.code.len() + 4, loop_start)?;
+                    // ctx.code.extend_from_slice(offset.to_le_bytes().as_ref());
+                    todo!()
+                },
+                Statement::Break => {
+                    todo!()
+                },
+                Statement::Continue => {
+                    todo!()
+                },
                 Statement::Error { code } => {
                     operand_i64(ctx, code);
                     ctx.code.push(OpCode::Error as u8);
                 }
             }
+        }
+        TemplateInstruction::I64Assignment(_) => {
+            todo!()
         }
     };
     Ok(())
@@ -656,7 +678,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use circom_witnesscalc::ast::{Assignment, FfExpr, I64Operand, TemplateInstruction, Signal};
+    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal};
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
 
@@ -799,26 +821,26 @@ mod tests {
             signals_num: 0,
             components: vec![],
             body: vec![
-                TemplateInstruction::Assignment(
-                    Assignment{
+                TemplateInstruction::FfAssignment(
+                    FfAssignment {
                         dest: "x_0".to_string(),
                         value: FfExpr::GetSignal(I64Operand::Literal(1)),
                     }
                 ),
-                TemplateInstruction::Assignment(
-                    Assignment{
+                TemplateInstruction::FfAssignment(
+                    FfAssignment {
                         dest: "x_1".to_string(),
                         value: FfExpr::GetSignal(I64Operand::Literal(2)),
                     }
                 ),
-                TemplateInstruction::Assignment(
-                    Assignment{
+                TemplateInstruction::FfAssignment(
+                    FfAssignment {
                         dest: "x_2".to_string(),
                         value: FfExpr::FfMul(
                             Box::new(FfExpr::Variable("x_0".to_string())),
                             Box::new(FfExpr::Variable("x_1".to_string())))}),
-                TemplateInstruction::Assignment(
-                    Assignment{
+                TemplateInstruction::FfAssignment(
+                    FfAssignment {
                         dest: "x_3".to_string(),
                         value: FfExpr::FfAdd(
                             Box::new(FfExpr::Variable("x_2".to_string())),

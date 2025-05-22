@@ -12,10 +12,10 @@ pub fn deserialize_witnesscalc_graph_from_bytes(
 ) -> std::io::Result<(Box<dyn NodesInterface>, Vec<usize>, InputSignalsInfo)> {
 
     if bytes.len() < WITNESSCALC_GRAPH_MAGIC.len() {
-        return Err(Error::new(ErrorKind::Other, "Invalid magic"));
+        return Err(Error::other("Invalid magic"));
     }
     if !bytes[..WITNESSCALC_GRAPH_MAGIC.len()].eq(WITNESSCALC_GRAPH_MAGIC) {
-        return Err(Error::new(ErrorKind::Other, "Invalid magic"));
+        return Err(Error::other("Invalid magic"));
     }
 
     let mut idx: usize = WITNESSCALC_GRAPH_MAGIC.len();

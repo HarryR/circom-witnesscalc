@@ -214,14 +214,21 @@ pub struct Template {
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum TemplateInstruction {
-    Assignment(Assignment),
+    FfAssignment(FfAssignment),
+    I64Assignment(I64Assignment),
     Statement(Statement),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
-pub struct Assignment {
+pub struct FfAssignment {
     pub dest: String,
     pub value: FfExpr,
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct I64Assignment {
+    pub dest: String,
+    pub value: I64Expr,
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -237,7 +244,10 @@ pub enum Statement {
         condition: FfExpr,
         if_block: Vec<TemplateInstruction>,
         else_block: Vec<TemplateInstruction>
-    }
+    },
+    Loop(Vec<TemplateInstruction>),
+    Break,
+    Continue,
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]
@@ -268,6 +278,12 @@ pub enum FfExpr {
     FfEqz(Box<FfExpr>),
     Variable(String),
     Literal(BigUint),
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug, Clone))]
+pub enum I64Expr {
+    Variable(String),
+    Literal(i64),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
