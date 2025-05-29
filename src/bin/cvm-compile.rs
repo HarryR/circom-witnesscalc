@@ -473,7 +473,37 @@ fn operand_i64(
     }
 }
 
-fn expression<F>(
+fn expr<F>(
+    ctx: &mut TemplateCompilationContext, ff: &F,
+    expr: &ast::Expr) -> Result<(), Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations {
+    
+    match expr {
+        ast::Expr::Ff(ff_expr) => ff_expression(ctx, ff, ff_expr),
+        ast::Expr::I64(i64_expr) => i64_expression(ctx, i64_expr),
+    }
+}
+
+fn i64_expression(
+    ctx: &mut TemplateCompilationContext,
+    expr: &ast::I64Expr) -> Result<(), Box<dyn Error>> {
+    
+    match expr {
+        ast::I64Expr::Variable(var_name) => {
+            let var_idx = ctx.get_i64_variable_index(var_name);
+            ctx.code.push(OpCode::LoadVariableI64 as u8);
+            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+        }
+        ast::I64Expr::Literal(value) => {
+            ctx.code.push(OpCode::PushI64 as u8);
+            ctx.code.extend_from_slice(value.to_le_bytes().as_slice());
+        }
+    }
+    Ok(())
+}
+
+fn ff_expression<F>(
     ctx: &mut TemplateCompilationContext, ff: &F,
     expr: &ast::FfExpr) -> Result<(), Box<dyn Error>>
 where
@@ -490,37 +520,37 @@ where
             ctx.code.push(OpCode::LoadCmpSignal as u8);
         }
         ast::FfExpr::FfMul(lhs, rhs) => {
-            expression(ctx, ff, rhs)?;
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpMul as u8);
         },
         ast::FfExpr::FfAdd(lhs, rhs) => {
-            expression(ctx, ff, rhs)?;
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpAdd as u8);
         },
         ast::FfExpr::FfNeq(lhs, rhs) => {
-            expression(ctx, ff, rhs)?;
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpNeq as u8);
         },
         ast::FfExpr::FfDiv(lhs, rhs) => {
-            expression(ctx, ff, rhs)?;
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpDiv as u8);
         },
         ast::FfExpr::FfSub(lhs, rhs) => {
-            expression(ctx, ff, rhs)?;
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpSub as u8);
         },
         ast::FfExpr::FfEq(lhs, rhs) => {
-            expression(ctx, ff, rhs)?;
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpEq as u8);
         },
         ast::FfExpr::FfEqz(lhs) => {
-            expression(ctx, ff, lhs)?;
+            ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpEqz as u8);
         },
         ast::FfExpr::Variable( var_name ) => {
@@ -545,7 +575,7 @@ where
 
     match inst {
         ast::TemplateInstruction::FfAssignment(assignment) => {
-            expression(ctx, ff, &assignment.value)?;
+            ff_expression(ctx, ff, &assignment.value)?;
             ctx.code.push(OpCode::StoreVariableFf as u8);
             let var_idx = ctx.get_ff_variable_index(&assignment.dest);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
@@ -553,18 +583,18 @@ where
         ast::TemplateInstruction::Statement(statement) => {
             match statement {
                 Statement::SetSignal { idx, value } => {
-                    expression(ctx, ff, value)?;
+                    ff_expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
                 },
                 Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
                     operand_i64(ctx, cmp_idx);
                     operand_i64(ctx, sig_idx);
-                    expression(ctx, ff, value)?;
+                    ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
                 },
                 Statement::Branch { condition, if_block, else_block } => {
-                    expression(ctx, ff, condition)?;
+                    expr(ctx, ff, condition)?;
 
                     let else_jump_offset = pre_emit_jump_if_false(&mut ctx.code);
                     block(ctx, ff, if_block)?;

@@ -5,7 +5,7 @@ use winnow::{ModalResult};
 use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail, opt, cut_err, trace, eof, delimited};
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
-use crate::ast::{FfAssignment, I64Assignment, ComponentsMode, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
+use crate::ast::{FfAssignment, I64Assignment, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -264,6 +264,88 @@ fn parse_spr_assignment(input: &mut &str) -> ModalResult<FfAssignment> {
     })
 }
 
+fn parse_block_until(input: &mut &str, terminators: &[&str]) -> ModalResult<Vec<TemplateInstruction>> {
+    let mut block = Vec::new();
+    
+    while !input.is_empty() {
+        // Check if we've reached any of the terminators
+        // We need to ensure the terminator is a complete word, not just a prefix
+        let found_terminator = terminators.iter().any(|&term| {
+            if input.starts_with(term) {
+                // Check if the terminator is followed by a non-alphanumeric character
+                // or is at the end of input
+                let after_term = &input[term.len()..];
+                after_term.is_empty() || 
+                    after_term.chars().next().map_or(true, |c| !c.is_alphanumeric() && c != '_')
+            } else {
+                false
+            }
+        });
+        
+        if found_terminator {
+            break;
+        }
+
+        let inst = alt((
+            parse_assignment.map(|x| Some(TemplateInstruction::FfAssignment(x))),
+            parse_i64_assignment.map(|x| Some(TemplateInstruction::I64Assignment(x))),
+            parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
+            parse_empty_line.map(|_| None),
+        )).parse_next(input);
+
+        match inst {
+            Ok(Some(inst)) => { block.push(inst); }
+            Ok(None) => (),
+            Err(err) => {
+                match err {
+                    ErrMode::Cut(_) => { return Err(err); }
+                    _ => { break; }
+                }
+            }
+        }
+    }
+    
+    Ok(block)
+}
+
+fn parse_branch_with_condition<F, T>(
+    condition_parser: F,
+    wrap_expr: fn(T) -> Expr,
+) -> impl FnMut(&mut &str) -> ModalResult<Statement>
+where
+    F: Fn(&mut &str) -> ModalResult<T> + Copy,
+{
+    move |i: &mut &str| {
+        // Parse the condition
+        let (condition, _, _, _) = seq!(
+            preceded(space1, condition_parser),
+            space0,
+            opt(parse_eol_comment),
+            parse_line_end
+        ).parse_next(i)?;
+
+        // Parse the if block
+        let if_block = parse_block_until(i, &["else", "end"])?;
+
+        // Parse the optional else block
+        let mut else_block = Vec::new();
+        if i.starts_with("else") {
+            // Consume the "else" keyword
+            let _ = (literal("else"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
+            else_block = parse_block_until(i, &["end"])?;
+        }
+
+        // Consume the "end" keyword
+        let _ = (literal("end"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
+
+        Ok(Statement::Branch {
+            condition: wrap_expr(condition),
+            if_block,
+            else_block,
+        })
+    }
+}
+
 fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
     let s = dispatch! {parse_operator_name;
         "set_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_ff_expr))
@@ -282,30 +364,7 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
                 let _ = (space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
 
                 // Parse the loop body
-                let mut loop_body = Vec::new();
-                'loop_body: while !i.is_empty() {
-                    if i.starts_with("end") {
-                        break 'loop_body;
-                    }
-
-                    let inst = alt((
-                        parse_assignment.map(|x| Some(TemplateInstruction::FfAssignment(x))),
-                        parse_i64_assignment.map(|x| Some(TemplateInstruction::I64Assignment(x))),
-                        parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
-                        parse_empty_line.map(|_| None),
-                    )).parse_next(i);
-
-                    match inst {
-                        Ok(Some(inst)) => { loop_body.push(inst); }
-                        Ok(None) => (),
-                        Err(err) => {
-                            match err {
-                                ErrMode::Cut(_) => { return Err(err); }
-                                _ => { break 'loop_body; }
-                            }
-                        }
-                    }
-                }
+                let loop_body = parse_block_until(i, &["end"])?;
 
                 // Consume the "end" keyword
                 let _ = (literal("end"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
@@ -329,90 +388,18 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
                 Ok(Statement::Break)
             }
         },
-        "if" => {
-            |i: &mut &str| {
-                // Parse the condition
-                let (condition, _, _, _) = seq!(
-                    preceded(space1, parse_ff_expression),
-                    space0,
-                    opt(parse_eol_comment),
-                    parse_line_end
-                ).parse_next(i)?;
-
-                // Parse the if block
-                let mut if_block = Vec::new();
-                'if_block: while !i.is_empty() {
-                    if i.starts_with("else") || i.starts_with("end") {
-                        break 'if_block;
-                    }
-
-                    let inst = alt((
-                        parse_assignment.map(|x| Some(TemplateInstruction::FfAssignment(x))),
-                        parse_i64_assignment.map(|x| Some(TemplateInstruction::I64Assignment(x))),
-                        parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
-                        parse_empty_line.map(|_| None),
-                    )).parse_next(i);
-
-                    match inst {
-                        Ok(Some(inst)) => { if_block.push(inst); }
-                        Ok(None) => (),
-                        Err(err) => {
-                            match err {
-                                ErrMode::Cut(_) => { return Err(err); }
-                                _ => { break 'if_block; }
-                            }
-                        }
-                    }
-                }
-
-                // Parse the optional else block
-                let mut else_block = Vec::new();
-                if i.starts_with("else") {
-                    // Consume the "else" keyword
-                    let _ = (literal("else"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
-
-                    'else_block: while !i.is_empty() {
-                        if i.starts_with("end") {
-                            break 'else_block;
-                        }
-
-                        let inst = alt((
-                            parse_assignment.map(|x| Some(TemplateInstruction::FfAssignment(x))),
-                            parse_i64_assignment.map(|x| Some(TemplateInstruction::I64Assignment(x))),
-                            parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
-                            parse_empty_line.map(|_| None),
-                        )).parse_next(i);
-
-                        match inst {
-                            Ok(Some(inst)) => { else_block.push(inst); }
-                            Ok(None) => (),
-                            Err(err) => {
-                                match err {
-                                    ErrMode::Cut(_) => { return Err(err); }
-                                    _ => { break 'else_block; }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Consume the "end" keyword
-                let _ = (literal("end"), space0, opt(parse_eol_comment), parse_line_end).parse_next(i)?;
-
-                Ok(Statement::Branch {
-                    condition,
-                    if_block,
-                    else_block,
-                })
-            }
-        },
+        "i64.if" => parse_branch_with_condition(parse_i64_expression, Expr::I64),
+        "ff.if" => parse_branch_with_condition(parse_ff_expression, Expr::Ff),
         _ => fail::<_, Statement, _>,
     }
         .parse_next(input)?;
 
-    // For set_signal, we need to parse the line end
-    if let Statement::SetSignal { .. } = s {
-        (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
+    // For set_signal, set_cmp_input_run, and error, we need to parse the line end
+    match &s {
+        Statement::SetSignal { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } => {
+            (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
+        }
+        _ => {}
     }
 
     Ok(s)
@@ -481,6 +468,7 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
 
     Ok(result)
 }
+
 
 fn parse_eol_comment(i: &mut &str) -> ModalResult<()> {
     (";;", take_till(0.., ['\n', '\r']))
@@ -613,15 +601,96 @@ pub fn parse(i: &str) -> Result<AST, ParseError<&str, ContextError>> {
 mod tests {
     use num_traits::Num;
     use num_bigint::BigUint;
-    use winnow::error::{ContextError};
-    use crate::parser::{parse_var_assignment, parse_ast, parse_bus_signal, parse_eol_comment, parse_ff_expression, parse_ff_signal, parse_i64_literal, parse_i64_operand, parse_operator_name, parse_prime, parse_statement, parse_template, parse_template_body, parse_variable_name};
     use winnow::{Parser};
-    use winnow::token::{take_till};
-    use crate::ast::{FfAssignment, ComponentsMode, FfExpr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST, I64Assignment, I64Expr};
+    use super::*;
+
+    #[test]
+    fn test_parse_block_until() {
+        // Test 1: Basic block parsing until "end"
+        let mut input = r#"x_1 = get_signal i64.1
+x_2 = ff.mul x_0 x_1
+set_signal i64.0 x_2
+end
+remaining"#;
+        let block = parse_block_until(&mut input, &["end"]).unwrap();
+        assert_eq!(block.len(), 3);
+        assert_eq!(input, "end\nremaining");
+
+        // Test 2: Block parsing with multiple terminators
+        let mut input = r#"x_1 = ff.1
+x_2 = x_1
+else
+x_3 = ff.0
+end"#;
+        let block = parse_block_until(&mut input, &["else", "end"]).unwrap();
+        assert_eq!(block.len(), 2);
+        assert_eq!(input, "else\nx_3 = ff.0\nend");
+
+        // Test 3: Empty block
+        let mut input = "end";
+        let block = parse_block_until(&mut input, &["end"]).unwrap();
+        assert_eq!(block.len(), 0);
+        assert_eq!(input, "end");
+
+        // Test 4: Block with comments and empty lines
+        let mut input = r#"x_1 = ff.1 ;; comment
+
+;; another comment
+x_2 = x_1
+end"#;
+        let block = parse_block_until(&mut input, &["end"]).unwrap();
+        assert_eq!(block.len(), 2);
+        assert_eq!(input, "end");
+
+        // Test 5: Nested control structures
+        let mut input = r#"x_1 = ff.1
+ff.if x_1
+x_2 = ff.2
+end
+x_3 = ff.3
+end"#;
+        let block = parse_block_until(&mut input, &["end"]).unwrap();
+        assert_eq!(block.len(), 3); // assignment, if statement, assignment
+        assert_eq!(input, "end");
+
+        // Test 6: Error propagation - invalid statement
+        let mut input = r#"x_1 = ff.1
+invalid statement here
+x_2 = ff.2
+end"#;
+        let result = parse_block_until(&mut input, &["end"]);
+        // Should stop at the invalid statement
+        assert!(result.is_ok());
+        let block = result.unwrap();
+        assert_eq!(block.len(), 1); // Only the first valid statement
+
+        // Test 7: Multiple terminators at different positions
+        let mut input = r#"x_1 = ff.1
+x_2 = ff.2
+else
+x_3 = ff.3
+end"#;
+        // Should stop at first terminator found
+        let block = parse_block_until(&mut input, &["end", "else"]).unwrap();
+        assert_eq!(block.len(), 2);
+        assert_eq!(input, "else\nx_3 = ff.3\nend");
+
+        // Test 8: Ignore words that start with "end" but are not the terminator
+        let mut input = r#"x_1 = get_signal i64.1
+x_2 = ff.mul x_0 x_1
+set_signal i64.0 x_2
+set;; comment line
+remaining"#;
+        let block = parse_block_until(&mut input, &["set"]).unwrap();
+        println!("{:?}", block);
+        println!("{:?}", input);
+        assert_eq!(block.len(), 3);
+        assert_eq!(input, "set;; comment line\nremaining");
+    }
 
     #[test]
     fn test_parse_branch() {
-        let mut input = r#"if x_1
+        let mut input = r#"ff.if x_1
 ;; store bucket. Line 30
 ;; getting src
 ;; compute bucket
@@ -646,7 +715,7 @@ end
         let statement = parse_statement.parse(&mut input).unwrap();
 
         let want = Statement::Branch {
-            condition: ff("x_1"),
+            condition: Expr::Ff(ff("x_1")),
             if_block: vec![
                 assign("x_2", &get_signal("1")),
                 assign("x_3", &ff_div("1", "x_2")),
@@ -661,7 +730,7 @@ end
 
     #[test]
     fn test_parse_branch2() {
-        let mut input = r#"if get_signal x_1
+        let mut input = r#"ff.if get_signal x_1
 x_2 = get_signal i64.1
 x_3 = ff.div ff.1 x_2
 set_signal i64.2 x_3
@@ -673,7 +742,34 @@ end
         let statement = parse_statement.parse(&mut input).unwrap();
 
         let want = Statement::Branch {
-            condition: get_signal("x_1"),
+            condition: Expr::Ff(get_signal("x_1")),
+            if_block: vec![
+                assign("x_2", &get_signal("1")),
+                assign("x_3", &ff_div("1", "x_2")),
+                set_signal("2", "x_3"),
+            ],
+            else_block: vec![
+                set_signal("2", "0"),
+            ],
+        };
+        assert_eq!(statement, want);
+    }
+
+    #[test]
+    fn test_parse_branch_i64() {
+        let mut input = r#"i64.if x_1
+x_2 = get_signal i64.1
+x_3 = ff.div ff.1 x_2
+set_signal i64.2 x_3
+else
+set_signal i64.2 ff.0
+end
+"#;
+
+        let statement = parse_statement.parse(&mut input).unwrap();
+
+        let want = Statement::Branch {
+            condition: Expr::I64(i64_("x_1")),
             if_block: vec![
                 assign("x_2", &get_signal("1")),
                 assign("x_3", &ff_div("1", "x_2")),
@@ -873,15 +969,6 @@ expected valid i64 value"#;
     }
 
     #[test]
-    fn test_4() {
-        let mut input = ";; xxx";
-        let x = take_till::<_, _, ContextError>(1.., ['x', '\r'])
-            .parse_next(&mut input).unwrap();
-        println!("{}", x);
-        println!("{}", input);
-    }
-
-    #[test]
     fn test_ff_signal() {
         let mut input = "ff 0  ff 0 ] [ ff 0 ] [3] [ ]";
         let want = Signal::Ff(vec![]);
@@ -930,9 +1017,9 @@ x_2 = i64.1";
     fn test_template_body_loop() {
         // the test template is last in the input
         let mut input = "loop
-if x_7
+ff.if x_7
 x_6 = get_signal i64.3
-set_cmp_input i64.0 i64.1 x_6
+set_cmp_input_run i64.0 i64.1 x_6
 x_7 = i64.sub x_7 i64.1
 x_8 = i64.add x_8 i64.1
 x_9 = i64.add x_9 i64.1
@@ -944,13 +1031,14 @@ end
         let want = vec![
             TemplateInstruction::Statement(Statement::Loop(vec![
                 TemplateInstruction::Statement(Statement::Branch {
-                    condition: ff("x_7"),
+                    condition: Expr::Ff(ff("x_7")),
                     if_block: vec![
                         assign("x_6", &get_signal("3")),
                         // set_cmp_input("0", "1", "x_6"),
                         // assign("x_7", &i64_sub("x_7", "1")),
                         // assign("x_8", &i64_add("x_8", "1")),
                         // assign("x_9", &i64_add("x_9", "1")),
+                        TemplateInstruction::Statement(Statement::Continue),
                     ],
                     else_block: vec![],
                 }),

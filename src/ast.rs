@@ -241,7 +241,7 @@ pub enum Statement {
     },
     Error { code: I64Operand },
     Branch {
-        condition: FfExpr,
+        condition: Expr,
         if_block: Vec<TemplateInstruction>,
         else_block: Vec<TemplateInstruction>
     },
@@ -264,6 +264,11 @@ pub enum UnoOp {
     // Bnot,
 }
 
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum Expr {
+    Ff(FfExpr),
+    I64(I64Expr),
+}
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]
 pub enum FfExpr {
