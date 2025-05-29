@@ -271,12 +271,11 @@ fn parse_block_until(input: &mut &str, terminators: &[&str]) -> ModalResult<Vec<
         // Check if we've reached any of the terminators
         // We need to ensure the terminator is a complete word, not just a prefix
         let found_terminator = terminators.iter().any(|&term| {
-            if input.starts_with(term) {
+            if let Some(after_term) = input.strip_prefix(term) {
                 // Check if the terminator is followed by a non-alphanumeric character
                 // or is at the end of input
-                let after_term = &input[term.len()..];
                 after_term.is_empty() || 
-                    after_term.chars().next().map_or(true, |c| !c.is_alphanumeric() && c != '_')
+                    after_term.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_')
             } else {
                 false
             }
@@ -690,7 +689,7 @@ remaining"#;
 
     #[test]
     fn test_parse_branch() {
-        let mut input = r#"ff.if x_1
+        let input = r#"ff.if x_1
 ;; store bucket. Line 30
 ;; getting src
 ;; compute bucket
@@ -712,7 +711,7 @@ set_signal i64.2 ff.0
 end
 "#;
 
-        let statement = parse_statement.parse(&mut input).unwrap();
+        let statement = parse_statement.parse(input).unwrap();
 
         let want = Statement::Branch {
             condition: Expr::Ff(ff("x_1")),
@@ -730,7 +729,7 @@ end
 
     #[test]
     fn test_parse_branch2() {
-        let mut input = r#"ff.if get_signal x_1
+        let input = r#"ff.if get_signal x_1
 x_2 = get_signal i64.1
 x_3 = ff.div ff.1 x_2
 set_signal i64.2 x_3
@@ -739,7 +738,7 @@ set_signal i64.2 ff.0
 end
 "#;
 
-        let statement = parse_statement.parse(&mut input).unwrap();
+        let statement = parse_statement.parse(input).unwrap();
 
         let want = Statement::Branch {
             condition: Expr::Ff(get_signal("x_1")),
@@ -757,7 +756,7 @@ end
 
     #[test]
     fn test_parse_branch_i64() {
-        let mut input = r#"i64.if x_1
+        let input = r#"i64.if x_1
 x_2 = get_signal i64.1
 x_3 = ff.div ff.1 x_2
 set_signal i64.2 x_3
@@ -766,7 +765,7 @@ set_signal i64.2 ff.0
 end
 "#;
 
-        let statement = parse_statement.parse(&mut input).unwrap();
+        let statement = parse_statement.parse(input).unwrap();
 
         let want = Statement::Branch {
             condition: Expr::I64(i64_("x_1")),
@@ -818,13 +817,13 @@ end
         let op = parse_i64_operand.parse_next(&mut input).unwrap();
         assert_eq!(op, want);
 
-        let mut input = "i64.93841982938198593829123 = get_signal";
+        let input = "i64.93841982938198593829123 = get_signal";
         let want_err = "\
 i64.93841982938198593829123 = get_signal
     ^
 invalid i64 literal
 expected valid i64 value";
-        let op = parse_i64_operand.parse(&mut input)
+        let op = parse_i64_operand.parse(input)
             .unwrap_err().to_string();
 
         assert_eq!(op, want_err);
@@ -832,40 +831,40 @@ expected valid i64 value";
 
     #[test]
     fn test_parse_expression() {
-        let mut input = "get_signal x_50";
+        let input = "get_signal x_50";
         let want = get_signal("x_50");
-        let op = parse_ff_expression.parse(&mut input).unwrap();
+        let op = parse_ff_expression.parse(input).unwrap();
         assert_eq!(op, want);
 
-        let mut input = "get_signal i64.2";
+        let input = "get_signal i64.2";
         let want = get_signal("2");
-        let op = parse_ff_expression.parse(&mut input).unwrap();
+        let op = parse_ff_expression.parse(input).unwrap();
         assert_eq!(op, want);
 
-        let mut input = "ff.div ff.2 v_3";
+        let input = "ff.div ff.2 v_3";
         let want = ff_div("2", "v_3");
-        let op = parse_ff_expression.parse(&mut input).unwrap();
+        let op = parse_ff_expression.parse(input).unwrap();
         assert_eq!(op, want);
 
-        let mut input = "v_3";
+        let input = "v_3";
         let want = ff("v_3");
-        let op = parse_ff_expression.parse(&mut input).unwrap();
+        let op = parse_ff_expression.parse(input).unwrap();
         assert_eq!(op, want);
 
-        let mut input = "ff.5";
+        let input = "ff.5";
         let want = ff("5");
-        let op = parse_ff_expression.parse(&mut input).unwrap();
+        let op = parse_ff_expression.parse(input).unwrap();
         assert_eq!(op, want);
     }
 
     #[test]
     fn test_assignment() {
-        let mut input = "x_4 = get_signal i64.2";
+        let input = "x_4 = get_signal i64.2";
         let want = FfAssignment {
             dest: "x_4".to_string(),
             value: get_signal("2"),
         };
-        let a = parse_var_assignment.parse(&mut input).unwrap();
+        let a = parse_var_assignment.parse(input).unwrap();
         assert_eq!(a, want);
 
         let mut input = "x_4 = get_signal i64.2 2";
@@ -915,12 +914,12 @@ x_2 = ff.mul x_0 x_1";
 
     #[test]
     fn test_statement() {
-        let mut input = "set_signal i64.0 x_3";
+        let input = "set_signal i64.0 x_3";
         let want = Statement::SetSignal {
             idx: I64Operand::Literal(0),
             value: ff("x_3"),
         };
-        let a = parse_statement.parse(&mut input).unwrap();
+        let a = parse_statement.parse(input).unwrap();
         assert_eq!(a, want);
 
         let mut input = "set_signal i64.0 x_3 ;; comment
@@ -947,8 +946,8 @@ x";
 
     #[test]
     fn test_parse_i64_literal_error() {
-        let mut input = "i64.93841982938198593829123 = get_signal";
-        let op = parse_i64_literal.parse(&mut input).unwrap_err();
+        let input = "i64.93841982938198593829123 = get_signal";
+        let op = parse_i64_literal.parse(input).unwrap_err();
         let want_err = r#"i64.93841982938198593829123 = get_signal
     ^
 invalid i64 literal
@@ -1174,7 +1173,7 @@ set_signal i64.0 x_3
 
     #[test]
     fn test_parse_ast() {
-        let mut input = ";; Prime value
+        let input = ";; Prime value
 %%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
 ;; Memory of signals
@@ -1238,7 +1237,7 @@ x_1 = get_signal i64.2
                 },
             ],
         };
-        let tmpl_header = consume_parse_result(parse_ast.parse(&mut input));
+        let tmpl_header = consume_parse_result(parse_ast.parse(input));
         assert_eq!(want, tmpl_header);
     }
 
@@ -1255,12 +1254,12 @@ x_1 = get_signal i64.2
     #[test]
     fn test_parse_prime() {
         // no newline
-        let mut input = "%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617";
+        let input = "%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617";
         let want_err = "\
 %%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617
                                                                                      ^
 expected newline";
-        let r = parse_prime.parse(&mut input);
+        let r = parse_prime.parse(input);
         assert!(r.is_err());
         let err = r.unwrap_err().to_string();
         assert_eq!(err, want_err);
@@ -1274,8 +1273,8 @@ x";
         assert_eq!(input, "x");
 
         // parse
-        let mut input = "%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617\n";
-        let prime = consume_parse_result(parse_prime.parse(&mut input));
+        let input = "%%prime 21888242871839275222246405745257275088548364400416034343698204186575808495617\n";
+        let prime = consume_parse_result(parse_prime.parse(input));
         assert_eq!(want, prime);
     }
 

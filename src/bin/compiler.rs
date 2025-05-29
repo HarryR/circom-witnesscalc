@@ -1995,7 +1995,7 @@ mod tests {
         }));
         expression(
             &inst, &mut code, &constants, &mut vec![],
-            &mut vec![]);
+            &[]);
         assert_eq!(code, vec![OpCode::Push8 as u8, 42, 0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -2010,7 +2010,7 @@ mod tests {
             op_aux_no: 0,
             value: 42,
         }));
-        expression(&inst, &mut code, &constants, &mut vec![], &mut vec![]);
+        expression(&inst, &mut code, &constants, &mut vec![], &[]);
         assert_eq!(code, vec![OpCode::GetConstant8 as u8, 42, 0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -2347,9 +2347,9 @@ STORE(
         let j = bigint_to_u64(i);
         assert!(matches!(j, Some(u64::MAX)));
 
-        i = i * uint!(2_U256);
+        i *= uint!(2_U256);
         let j = bigint_to_u64(i);
-        assert!(matches!(j, None));
+        assert!(j.is_none());
     }
 
     #[test]
@@ -2438,8 +2438,7 @@ STORE(
     #[test]
     fn test_dump() {
         let noop = OpCode::NoOp as u8;
-        let mut code = vec![];
-        code.push(noop);
+        let code = vec![noop];
         let c = Component{
             vars: vec![],
             signals_start: 0,
@@ -2460,11 +2459,11 @@ STORE(
         let mut signals = vec![None; 10];
         let io_map = BTreeMap::new();
         execute(
-            component, &templates, &vec![], &constants, &mut signals,
+            component, &templates, &[], &constants, &mut signals,
             &io_map, None);
     }
 
-    fn names_from_fn_vec(fns: &Vec<Function>) -> Vec<String> {
+    fn names_from_fn_vec(fns: &[Function]) -> Vec<String> {
         fns.iter().map(|f| f.name.clone()).collect()
     }
 

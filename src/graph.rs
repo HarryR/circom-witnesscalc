@@ -1692,7 +1692,7 @@ mod tests {
         assert_eq!(nodes.ln, 0);
         nodes.push(Node::TresOp(TresOperation::TernCond, 1, 2, 3));
         assert_eq!(nodes.cap, 2 * Node::SIZE);
-        assert_eq!(nodes.ln, 1 * Node::SIZE);
+        assert_eq!(nodes.ln, Node::SIZE);
 
         nodes.push(Node::TresOp(TresOperation::TernCond, 1, 2, 3));
         assert_eq!(nodes.cap, 2 * Node::SIZE);
@@ -1711,7 +1711,7 @@ mod tests {
         assert_eq!(nodes.ln, 0);
         nodes.push(Node::TresOp(TresOperation::TernCond, 1, 2, 3));
         assert_eq!(nodes.cap, 2 * Node::SIZE);
-        assert_eq!(nodes.ln, 1 * Node::SIZE);
+        assert_eq!(nodes.ln, Node::SIZE);
 
         nodes.push(Node::TresOp(TresOperation::TernCond, 1, 2, 3));
         assert_eq!(nodes.cap, 2 * Node::SIZE);

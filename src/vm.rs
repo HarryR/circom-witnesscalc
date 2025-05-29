@@ -865,7 +865,7 @@ pub fn execute(
                     (&templates[template_id].line_numbers, templates[template_id].name.as_str())
                 }
                 Frame::Function { function, .. } => {
-                    (&(*function).line_numbers, function.name.as_str())
+                    (&function.line_numbers, function.name.as_str())
                 }
             };
             disassemble_instruction(code, line_numbers, ip, name, functions);

@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_example() {
-        assert!(true);
+        // Placeholder test
     }
 
     #[test]
@@ -883,7 +883,7 @@ mod tests {
         };
         let ff = Field::new(bn254_prime);
         let vm_tmpl = compile_template(&ast_tmpl, &ff).unwrap();
-        disassemble::<U254>(&vec![vm_tmpl]);
+        disassemble::<U254>(&[vm_tmpl]);
     }
 
     #[test]
@@ -897,7 +897,7 @@ mod tests {
   "b": false,
   "c": 100500
 }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
         want.insert("main.a".to_string(), U254::from_str("1").unwrap());
         want.insert("main.b".to_string(), U254::from_str("0").unwrap());
@@ -906,28 +906,28 @@ mod tests {
 
         // embedded objects
         let i = r#"{ "a": { "b": true } }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
         want.insert("main.a.b".to_string(), U254::from_str("1").unwrap());
         assert_eq!(want, result);
 
         // null error
         let i = r#"{ "a": { "b": null } }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff);
+        let result = parse_signals_json(i.as_bytes(), &ff);
         let binding = result.unwrap_err();
         let err = binding.downcast_ref::<RuntimeError>().unwrap();
         assert!(matches!(err, RuntimeError::InvalidSignalsJson(x) if x == "unexpected null value at path main.a.b"));
 
         // Negative number
         let i = r#"{ "a": { "b": -4 } }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
         want.insert("main.a.b".to_string(), U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495613").unwrap());
         assert_eq!(want, result);
 
         // Float number error
         let i = r#"{ "a": { "b": 8.3 } }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff);
+        let result = parse_signals_json(i.as_bytes(), &ff);
         let binding = result.unwrap_err();
         let err = binding.downcast_ref::<RuntimeError>().unwrap();
         let msg = err.to_string();
@@ -935,14 +935,14 @@ mod tests {
 
         // string
         let i = r#"{ "a": { "b": "8" } }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
         want.insert("main.a.b".to_string(), U254::from_str("8").unwrap());
         assert_eq!(want, result);
 
         // array
         let i = r#"{ "a": { "b": ["8", 2, 3] } }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
         want.insert("main.a.b[0]".to_string(), U254::from_str("8").unwrap());
         want.insert("main.a.b[1]".to_string(), U254::from_str("2").unwrap());
@@ -966,7 +966,7 @@ mod tests {
     ]
   }
 }"#;
-        let result = parse_signals_json(i.as_bytes(), &&ff).unwrap();
+        let result = parse_signals_json(i.as_bytes(), &ff).unwrap();
         let mut want: HashMap<String, U254> = HashMap::new();
         want.insert("main.a[0]".to_string(), U254::from_str("300").unwrap());
         want.insert("main.a[1]".to_string(), U254::from_str("3").unwrap());
