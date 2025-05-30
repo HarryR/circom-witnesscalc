@@ -355,6 +355,12 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_ff_expr))
             .map(
                 |(op1, op2, op3)| Statement::SetCmpSignalRun{ cmp_idx: op1, sig_idx: op2, value: op3 }),
+        "set_cmp_input" => (
+            preceded(space1, parse_i64_expression),
+            preceded(space1, parse_i64_expression),
+            preceded(space1, parse_ff_expr))
+            .map(
+                |(op1, op2, op3)| Statement::SetCmpInput{ cmp_idx: op1, sig_idx: op2, value: op3 }),
         "error" => preceded(space1, parse_i64_operand)
             .map(|op1| Statement::Error{ code: op1 }),
         "loop" => {
@@ -440,23 +446,10 @@ fn parse_i64_expression(input: &mut &str) -> ModalResult<I64Expr> {
     let result = alt((
         // Try to parse as an operator expression
         dispatch! {parse_operator_name;
-            // "get_signal" => preceded(space1, parse_i64_operand).map(FfExpr::GetSignal),
-            // "get_cmp_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_i64_operand))
-            //     .map(|(op1, op2)| FfExpr::GetCmpSignal { cmp_idx: op1, sig_idx: op2 }),
-            // "ff.mul" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
-            //     .map(|(op1, op2)| FfExpr::FfMul(Box::new(op1), Box::new(op2))),
-            // "ff.add" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
-            //     .map(|(op1, op2)| FfExpr::FfAdd(Box::new(op1), Box::new(op2))),
-            // "ff.neq" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
-            //     .map(|(op1, op2)| FfExpr::FfNeq(Box::new(op1), Box::new(op2))),
-            // "ff.div" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
-            //     .map(|(op1, op2)| FfExpr::FfDiv(Box::new(op1), Box::new(op2))),
-            // "ff.sub" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
-            //     .map(|(op1, op2)| FfExpr::FfSub(Box::new(op1), Box::new(op2))),
-            // "ff.eq" => (preceded(space1, parse_ff_expr), preceded(space1, parse_ff_expr))
-            //     .map(|(op1, op2)| FfExpr::FfEq(Box::new(op1), Box::new(op2))),
-            // "ff.eqz" => (preceded(space1, parse_ff_expr))
-            //     .map(|op1| FfExpr::FfEqz(Box::new(op1))),
+            "i64.add" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Add(Box::new(op1), Box::new(op2))),
+            "i64.sub" => (preceded(space1, parse_i64_expression), preceded(space1, parse_i64_expression))
+                .map(|(op1, op2)| I64Expr::Sub(Box::new(op1), Box::new(op2))),
             _ => fail::<_, I64Expr, _>,
         },
         // Try to parse as a literal
@@ -768,7 +761,7 @@ end
         let statement = parse_statement.parse(input).unwrap();
 
         let want = Statement::Branch {
-            condition: Expr::I64(i64_("x_1")),
+            condition: Expr::I64(i64_expr("x_1")),
             if_block: vec![
                 assign("x_2", &get_signal("1")),
                 assign("x_3", &ff_div("1", "x_2")),
@@ -1001,10 +994,14 @@ expected valid i64 value"#;
     fn test_template_body_i64_assignment() {
         let mut input = "x_1 = get_signal i64.2
 ;; OP(MUL)
-x_2 = i64.1";
+x_2 = i64.1
+x_3 = i64.add x_2 i64.1
+x_4 = i64.sub x_2 x_3";
         let want = vec![
             assign("x_1", &get_signal("2")),
-            assigni("x_2", &i64_("1")),
+            assigni("x_2", &i64_expr("1")),
+            assigni("x_3", &i64_add("x_2", "1")),
+            assigni("x_4", &i64_sub("x_2", "x_3")),
         ];
         let template_body = parse_template_body.parse_next(&mut input).unwrap();
         assert_eq!(want, template_body);
@@ -1012,31 +1009,29 @@ x_2 = i64.1";
     }
 
     #[test]
-    #[ignore]
     fn test_template_body_loop() {
         // the test template is last in the input
         let mut input = "loop
-ff.if x_7
+i64.if x_7
 x_6 = get_signal i64.3
-set_cmp_input_run i64.0 i64.1 x_6
+set_cmp_input i64.0 i64.1 x_6
 x_7 = i64.sub x_7 i64.1
 x_8 = i64.add x_8 i64.1
 x_9 = i64.add x_9 i64.1
 continue
 end
 break
-end
-";
+end";
         let want = vec![
             TemplateInstruction::Statement(Statement::Loop(vec![
                 TemplateInstruction::Statement(Statement::Branch {
-                    condition: Expr::Ff(ff("x_7")),
+                    condition: Expr::I64(i64_expr("x_7")),
                     if_block: vec![
                         assign("x_6", &get_signal("3")),
-                        // set_cmp_input("0", "1", "x_6"),
-                        // assign("x_7", &i64_sub("x_7", "1")),
-                        // assign("x_8", &i64_add("x_8", "1")),
-                        // assign("x_9", &i64_add("x_9", "1")),
+                        set_cmp_input("0", "1", "x_6"),
+                        assigni("x_7", &i64_sub("x_7", "1")),
+                        assigni("x_8", &i64_add("x_8", "1")),
+                        assigni("x_9", &i64_add("x_9", "1")),
                         TemplateInstruction::Statement(Statement::Continue),
                     ],
                     else_block: vec![],
@@ -1315,16 +1310,6 @@ x";
         }
     }
 
-    fn i64_(n: &str) -> I64Expr {
-        let is_var = is_alpha_or_underscore(n);
-
-        if is_var {
-            I64Expr::Variable(n.to_string())
-        } else {
-            I64Expr::Literal(n.parse::<i64>().unwrap())
-        }
-    }
-
     fn i64_op(n: &str) -> I64Operand {
         let is_var = is_alpha_or_underscore(n);
         if is_var {
@@ -1334,10 +1319,35 @@ x";
         }
     }
 
+    fn i64_expr(n: &str) -> I64Expr {
+        let is_var = is_alpha_or_underscore(n);
+        if is_var {
+            I64Expr::Variable(n.to_string())
+        } else {
+            I64Expr::Literal(n.parse().unwrap())
+        }
+    }
+
+    fn i64_add(op1: &str, op2: &str) -> I64Expr {
+        I64Expr::Add(Box::new(i64_expr(op1)), Box::new(i64_expr(op2)))
+    }
+
+    fn i64_sub(op1: &str, op2: &str) -> I64Expr {
+        I64Expr::Sub(Box::new(i64_expr(op1)), Box::new(i64_expr(op2)))
+    }
+
     fn set_signal(op1: &str, op2: &str) -> TemplateInstruction {
         TemplateInstruction::Statement(Statement::SetSignal {
             idx: i64_op(op1),
             value: ff(op2),
+        })
+    }
+
+    fn set_cmp_input(cmp_idx: &str, sig_idx: &str, value: &str) -> TemplateInstruction {
+        TemplateInstruction::Statement(Statement::SetCmpInput {
+            cmp_idx: i64_expr(cmp_idx),
+            sig_idx: i64_expr(sig_idx),
+            value: ff(value),
         })
     }
 

@@ -8,7 +8,6 @@ use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
-use circom_witnesscalc::ast::{Statement, TemplateInstruction};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
@@ -37,6 +36,8 @@ enum CompilationError {
     IncorrectSymFileFormat(String),
     #[error("jump offset is too large")]
     JumpOffsetIsTooLarge,
+    #[error("[assertion] Loop control stack is empty")]
+    LoopControlJumpsEmpty
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -434,6 +435,12 @@ struct TemplateCompilationContext {
     code: Vec<u8>,
     ff_variable_indexes: HashMap<String, i64>,
     i64_variable_indexes: HashMap<String, i64>,
+    // Stack of loop render frames.
+    // * The first element of the tuple is the position of the first loop body
+    // instruction (the continue statement).
+    // * The second element is a vector of indexes where to inject the
+    // position after loop body (the break statement)
+    loop_control_jumps: Vec<(usize, Vec<usize>)>,
 }
 
 impl TemplateCompilationContext {
@@ -442,6 +449,7 @@ impl TemplateCompilationContext {
             code: vec![],
             ff_variable_indexes: HashMap::new(),
             i64_variable_indexes: HashMap::new(),
+            loop_control_jumps: vec![],
         }
     }
 
@@ -473,18 +481,6 @@ fn operand_i64(
     }
 }
 
-fn expr<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
-    expr: &ast::Expr) -> Result<(), Box<dyn Error>>
-where
-    for <'a> &'a F: FieldOperations {
-    
-    match expr {
-        ast::Expr::Ff(ff_expr) => ff_expression(ctx, ff, ff_expr),
-        ast::Expr::I64(i64_expr) => i64_expression(ctx, i64_expr),
-    }
-}
-
 fn i64_expression(
     ctx: &mut TemplateCompilationContext,
     expr: &ast::I64Expr) -> Result<(), Box<dyn Error>> {
@@ -498,6 +494,16 @@ fn i64_expression(
         ast::I64Expr::Literal(value) => {
             ctx.code.push(OpCode::PushI64 as u8);
             ctx.code.extend_from_slice(value.to_le_bytes().as_slice());
+        }
+        ast::I64Expr::Add(lhs, rhs) => {
+            i64_expression(ctx, rhs)?;
+            i64_expression(ctx, lhs)?;
+            ctx.code.push(OpCode::OpI64Add as u8);
+        }
+        ast::I64Expr::Sub(lhs, rhs) => {
+            i64_expression(ctx, rhs)?;
+            i64_expression(ctx, lhs)?;
+            ctx.code.push(OpCode::OpI64Sub as u8);
         }
     }
     Ok(())
@@ -580,23 +586,43 @@ where
             let var_idx = ctx.get_ff_variable_index(&assignment.dest);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }
+        ast::TemplateInstruction::I64Assignment(assignment) => {
+            i64_expression(ctx, &assignment.value)?;
+            ctx.code.push(OpCode::StoreVariableI64 as u8);
+            let var_idx = ctx.get_i64_variable_index(&assignment.dest);
+            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+        }
         ast::TemplateInstruction::Statement(statement) => {
             match statement {
-                Statement::SetSignal { idx, value } => {
+                ast::Statement::SetSignal { idx, value } => {
                     ff_expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
                 },
-                Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
+                ast::Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
                     operand_i64(ctx, cmp_idx);
                     operand_i64(ctx, sig_idx);
                     ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
                 },
-                Statement::Branch { condition, if_block, else_block } => {
-                    expr(ctx, ff, condition)?;
+                ast::Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
+                    i64_expression(ctx, cmp_idx)?;
+                    i64_expression(ctx, sig_idx)?;
+                    ff_expression(ctx, ff, value)?;
+                    ctx.code.push(OpCode::StoreCmpInput as u8);
+                },
+                ast::Statement::Branch { condition, if_block, else_block } => {
+                    let else_jump_offset = match condition {
+                        ast::Expr::Ff(expr) => {
+                            ff_expression(ctx, ff, expr)?;
+                            pre_emit_jump_if_false(&mut ctx.code, true)
+                        },
+                        ast::Expr::I64(expr) => {
+                            i64_expression(ctx, expr)?;
+                            pre_emit_jump_if_false(&mut ctx.code, false)
+                        },
+                    };
 
-                    let else_jump_offset = pre_emit_jump_if_false(&mut ctx.code);
                     block(ctx, ff, if_block)?;
 
                     let to = ctx.code.len();
@@ -608,33 +634,39 @@ where
                     let to = ctx.code.len();
                     patch_jump(&mut ctx.code, end_jump_offset, to)?;
                 },
-                Statement::Loop( .. ) => {
-                    // // Start of loop
-                    // let loop_start = ctx.code.len();
-                    //
-                    // // Compile loop body
-                    // block(ctx, ff, instructions)?;
-                    //
-                    // // Jump back to start of loop
-                    // ctx.code.push(OpCode::Jump as u8);
-                    // let offset = calc_jump_offset(ctx.code.len() + 4, loop_start)?;
-                    // ctx.code.extend_from_slice(offset.to_le_bytes().as_ref());
-                    todo!()
+                ast::Statement::Loop( loop_block ) => {
+                    // Start of loop
+                    let loop_start = ctx.code.len();
+                    ctx.loop_control_jumps = vec![(loop_start, vec![])];
+
+                    // Compile loop body
+                    block(ctx, ff, loop_block)?;
+
+                    let to = ctx.code.len();
+                    let (_, break_jumps) = ctx.loop_control_jumps.pop()
+                        .ok_or(CompilationError::LoopControlJumpsEmpty)?;
+                    for break_jump_offset in break_jumps {
+                        patch_jump(&mut ctx.code, break_jump_offset, to)?;
+                    }
                 },
-                Statement::Break => {
-                    todo!()
+                ast::Statement::Break => {
+                    let jump_offset = pre_emit_jump(&mut ctx.code);
+                    if let Some((_, break_jumps)) = ctx.loop_control_jumps.last_mut() {
+                        break_jumps.push(jump_offset);
+                    } else {
+                        return Err(Box::new(CompilationError::LoopControlJumpsEmpty));
+                    }
                 },
-                Statement::Continue => {
-                    todo!()
+                ast::Statement::Continue => {
+                    let jump_offset = pre_emit_jump(&mut ctx.code);
+                    patch_jump(&mut ctx.code, jump_offset, ctx.loop_control_jumps.last()
+                        .ok_or(CompilationError::LoopControlJumpsEmpty)?.0)?;
                 },
-                Statement::Error { code } => {
+                ast::Statement::Error { code } => {
                     operand_i64(ctx, code);
                     ctx.code.push(OpCode::Error as u8);
                 }
             }
-        }
-        TemplateInstruction::I64Assignment(_) => {
-            todo!()
         }
     };
     Ok(())
@@ -676,8 +708,12 @@ fn patch_jump(
 }
 
 
-fn pre_emit_jump_if_false(code: &mut Vec<u8>) -> usize {
-    code.push(OpCode::JumpIfFalse as u8);
+fn pre_emit_jump_if_false(code: &mut Vec<u8>, is_ff: bool) -> usize {
+    if is_ff {
+        code.push(OpCode::JumpIfFalseFf as u8);
+    } else {
+        code.push(OpCode::JumpIfFalseI64 as u8);
+    }
     for _ in 0..4 { code.push(0xffu8); }
     code.len() - 4
 }
@@ -876,7 +912,7 @@ mod tests {
                             Box::new(FfExpr::Variable("x_2".to_string())),
                             Box::new(FfExpr::Literal(BigUint::from(2u32))))}),
                 TemplateInstruction::Statement(
-                    Statement::SetSignal {
+                    ast::Statement::SetSignal {
                         idx: I64Operand::Literal(0),
                         value: FfExpr::Variable("x_3".to_string())})
             ],

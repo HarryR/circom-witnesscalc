@@ -239,6 +239,11 @@ pub enum Statement {
         sig_idx: I64Operand,
         value: FfExpr
     },
+    SetCmpInput {
+        cmp_idx: I64Expr,
+        sig_idx: I64Expr,
+        value: FfExpr
+    },
     Error { code: I64Operand },
     Branch {
         condition: Expr,
@@ -289,6 +294,8 @@ pub enum FfExpr {
 pub enum I64Expr {
     Variable(String),
     Literal(i64),
+    Add(Box<I64Expr>, Box<I64Expr>),
+    Sub(Box<I64Expr>, Box<I64Expr>),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]

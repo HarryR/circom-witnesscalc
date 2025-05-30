@@ -15,37 +15,52 @@ pub enum OpCode {
     StoreSignal          = 2,
     PushI64              = 3, // Push i64 value to the stack
     PushFf               = 4, // Push ff value to the stack
-    // Set variables from the stack
-    // arguments:      offset from the base pointer
-    // required stack: values to store equal to variables number from arguments
+    // Set FF variable from the stack
+    // arguments: offset from the base pointer
+    // stack_ff:  value to store
     StoreVariableFf      = 5,
-    LoadVariableI64      = 6,
-    LoadVariableFf       = 7,
+    LoadVariableFf       = 6,
+    // Set I64 variable from the stack
+    // arguments: offset from the base pointer
+    // stack_i64:  value to store
+    StoreVariableI64     = 7,
+    LoadVariableI64      = 8,
+    // Jump to the instruction if there is 0 on stack_ff
+    // arguments: 4 byte LE offset to jump
+    // stack_ff:  the value to check for failure
+    JumpIfFalseFf        = 9,
+    // Jump to the instruction if there is 0 on stack_i64
+    // arguments: 4 byte LE offset to jump
+    // stack_i64: the value to check for failure
+    JumpIfFalseI64       = 10,
     // Jump to the instruction
     // arguments:      4 byte LE offset to jump
-    // required stack: the ff value to check for failure
-    JumpIfFalse          = 8,
-    // Jump to the instruction
-    // arguments:      4 byte LE offset to jump
-    Jump                 = 9,
+    Jump                 = 11,
     // stack_i64 contains the error code
-    Error                = 10,
+    Error                = 12,
     // Get the component signal and put it to the stack_ff
     // stack_i64:0 contains the signal index
     // stack_i64:-1 contains the component index
-    LoadCmpSignal        = 11,
+    LoadCmpSignal        = 13,
     // Store the component signal and run
     // stack_ff contains the value to store
     // stack_i64:0 contains the signal index
     // stack_i64:-1 contains the component index
-    StoreCmpSignalAndRun = 12,
-    OpMul                = 13,
-    OpAdd                = 14,
-    OpNeq                = 15,
-    OpDiv                = 16,
-    OpSub                = 17,
-    OpEq                 = 18,
-    OpEqz                = 19,
+    StoreCmpSignalAndRun = 14,
+    // Store the component input without decrementing input counter
+    // stack_ff contains the value to store
+    // stack_i64:0 contains the signal index
+    // stack_i64:-1 contains the component index
+    StoreCmpInput        = 15,
+    OpMul                = 16,
+    OpAdd                = 17,
+    OpNeq                = 18,
+    OpDiv                = 19,
+    OpSub                = 20,
+    OpEq                 = 21,
+    OpEqz                = 22,
+    OpI64Add             = 23,
+    OpI64Sub             = 24,
 }
 
 pub struct Component {
@@ -103,7 +118,7 @@ struct VM<T: FieldOps> {
     stack_ff: Vec<Option<T>>,
     stack_i64: Vec<Option<i64>>,
     base_pointer_ff: usize,
-    // base_pointer_i64: usize,
+    base_pointer_i64: usize,
 }
 
 impl<T: FieldOps> VM<T> {
@@ -112,7 +127,7 @@ impl<T: FieldOps> VM<T> {
             stack_ff: Vec::new(),
             stack_i64: Vec::new(),
             base_pointer_ff: 0,
-            // base_pointer_i64: 0,
+            base_pointer_i64: 0,
         }
     }
 
@@ -195,19 +210,30 @@ where
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
             println!("StoreVariableFf: {}", var_idx);
         }
+        OpCode::StoreVariableI64 => {
+            let var_idx: usize;
+            (var_idx, ip) = usize_from_code(code, ip).unwrap();
+            println!("StoreVariableI64: {}", var_idx);
+        }
         OpCode::LoadVariableI64 => {
-            println!("LoadVariableI64");
-            todo!();
+            let var_idx: usize;
+            (var_idx, ip) = usize_from_code(code, ip).unwrap();
+            println!("LoadVariableI64: {}", var_idx);
         }
         OpCode::LoadVariableFf => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
             println!("LoadVariableFf: {}", var_idx);
         }
-        OpCode::JumpIfFalse => {
+        OpCode::JumpIfFalseFf => {
             let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
             ip += size_of::<i32>();
-            println!("JumpIfFalse: {}", v);
+            println!("JumpIfFalseFf: {}", v);
+        }
+        OpCode::JumpIfFalseI64 => {
+            let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
+            ip += size_of::<i32>();
+            println!("JumpIfFalseI64: {}", v);
         }
         OpCode::Jump => {
             let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
@@ -219,6 +245,9 @@ where
         }
         OpCode::StoreCmpSignalAndRun => {
             println!("StoreCmpSignalAndRun");
+        }
+        OpCode::StoreCmpInput => {
+            println!("StoreCmpInput");
         }
         OpCode::OpMul => {
             println!("OpMul");
@@ -240,6 +269,12 @@ where
         }
         OpCode::OpEqz => {
             println!("OpEqz");
+        }
+        OpCode::OpI64Add => {
+            println!("OpI64Add");
+        }
+        OpCode::OpI64Sub => {
+            println!("OpI64Sub");
         }
         OpCode::Error => {
             println!("Error");
@@ -316,8 +351,26 @@ where
                 let value = vm.pop_ff()?;
                 vm.stack_ff[vm.base_pointer_ff + var_idx] = Some(value);
             }
+            OpCode::StoreVariableI64 => {
+                let var_idx: usize;
+                (var_idx, ip) = usize_from_code(
+                    &templates[component_tree.template_id].code, ip)?;
+                let value = vm.pop_i64()?;
+                vm.stack_i64[vm.base_pointer_i64 + var_idx] = Some(value);
+            }
             OpCode::LoadVariableI64 => {
-                todo!();
+                let var_idx: usize;
+                (var_idx, ip) = usize_from_code(
+                    &templates[component_tree.template_id].code, ip)?;
+                let var = match vm.stack_i64.get(vm.base_pointer_i64 + var_idx) {
+                    Some(v) => v,
+                    None => return Err(Box::new(RuntimeError::StackOverflow)),
+                };
+                let var = match var {
+                    Some(v) => v,
+                    None => return Err(Box::new(RuntimeError::StackVariableIsNotSet)),
+                };
+                vm.push_i64(*var);
             }
             OpCode::LoadVariableFf => {
                 let var_idx: usize;
@@ -371,18 +424,61 @@ where
                             Box::new(RuntimeError::UninitializedComponent))
                     }
                     Some(ref mut c) => {
-                        signals[c.signals_start + sig_idx] = Some(value);
+                        match signals[c.signals_start + sig_idx] {
+                            Some(_) => {
+                                return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                            }
+                            None => {
+                                // println!("StoreCmpSignalAndRun, cmp_idx: {cmp_idx}, sig_idx: {sig_idx}, abs sig_idx: {}", c.signals_start + sig_idx);
+                                signals[c.signals_start + sig_idx] = Some(value);
+                            }
+                        }
                         c.number_of_inputs -= 1;
                         execute(templates, signals, ff, c)?;
                     }
                 }
             }
-            OpCode::JumpIfFalse => {
+            OpCode::StoreCmpInput => {
+                let sig_idx = vm.pop_usize()?;
+                let cmp_idx = vm.pop_usize()?;
+                let value = vm.pop_ff()?;
+                match component_tree.components[cmp_idx] {
+                    None => {
+                        return Err(
+                            Box::new(RuntimeError::UninitializedComponent))
+                    }
+                    Some(ref mut c) => {
+                        match signals[c.signals_start + sig_idx] {
+                            Some(_) => {
+                                return Err(Box::new(RuntimeError::SignalIsAlreadySet));
+                            }
+                            None => {
+                                // println!("StoreCmpInput, cmp_idx: {cmp_idx}, sig_idx: {sig_idx}, abs sig_idx: {}", c.signals_start + sig_idx);
+                                signals[c.signals_start + sig_idx] = Some(value);
+                            }
+                        }
+                    }
+                }
+            }
+            OpCode::JumpIfFalseFf => {
                 let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
                 if vm.pop_ff()?.is_zero() {
+                    if offset < 0 {
+                        ip -= offset.unsigned_abs() as usize;
+                    } else {
+                        ip += offset as usize;
+                    }
+                }
+            }
+            OpCode::JumpIfFalseI64 => {
+                let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
+                ip += size_of::<i32>();
+
+                if vm.pop_i64()? == 0 {
                     if offset < 0 {
                         ip -= offset.unsigned_abs() as usize;
                     } else {
@@ -427,6 +523,16 @@ where
                 } else {
                     vm.push_ff(T::zero());
                 }
+            }
+            OpCode::OpI64Add => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(lhs+rhs);
+            }
+            OpCode::OpI64Sub => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(lhs-rhs);
             }
         }
     }
