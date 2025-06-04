@@ -11,8 +11,6 @@ use crate::field::{Field, FieldOperations, FieldOps, M};
 use rand::{RngCore};
 use ruint::aliases::U256;
 use serde::{Deserialize, Serialize};
-
-use compiler::intermediate_representation::ir_interface::OperatorType;
 use memmap2::MmapMut;
 use rand::prelude::ThreadRng;
 use ruint::uint;
@@ -111,41 +109,6 @@ impl From<&Operation> for crate::proto::DuoOp {
     }
 }
 
-impl TryFrom<OperatorType> for Operation {
-    type Error = String;
-    fn try_from(op: OperatorType) -> Result<Self, Self::Error> {
-        match op {
-            OperatorType::Mul => Ok(Operation::Mul),
-            OperatorType::Div => Ok(Operation::Div),
-            OperatorType::Add => Ok(Operation::Add),
-            OperatorType::Sub => Ok(Operation::Sub),
-            OperatorType::Pow => Ok(Operation::Pow),
-            OperatorType::IntDiv => Ok(Operation::Idiv),
-            OperatorType::Mod => Ok(Operation::Mod),
-            OperatorType::ShiftL => Ok(Operation::Shl),
-            OperatorType::ShiftR => Ok(Operation::Shr),
-            OperatorType::LesserEq => Ok(Operation::Leq),
-            OperatorType::GreaterEq => Ok(Operation::Geq),
-            OperatorType::Lesser => Ok(Operation::Lt),
-            OperatorType::Greater => Ok(Operation::Gt),
-            OperatorType::Eq(1) => Ok(Operation::Eq),
-            OperatorType::Eq(_) => todo!(),
-            OperatorType::NotEq => Ok(Operation::Neq),
-            OperatorType::BoolOr => Ok(Operation::Lor),
-            OperatorType::BoolAnd => Ok(Operation::Land),
-            OperatorType::BitOr => Ok(Operation::Bor),
-            OperatorType::BitAnd => Ok(Operation::Band),
-            OperatorType::BitXor => Ok(Operation::Bxor),
-            OperatorType::PrefixSub => Err("Not a binary operation".to_string()),
-            OperatorType::BoolNot => Err("Not a binary operation".to_string()),
-            OperatorType::Complement => Err("Not a binary operation".to_string()),
-            OperatorType::ToAddress => Err("Not a binary operation".to_string()),
-            OperatorType::MulAddress => Ok(Operation::Mul),
-            OperatorType::AddAddress => Ok(Operation::Add),
-        }
-    }
-}
-
 impl TryFrom<u8> for Operation {
     type Error = String;
 
@@ -238,42 +201,6 @@ impl From<&UnoOperation> for crate::proto::UnoOp {
             UnoOperation::Id => crate::proto::UnoOp::Id,
             UnoOperation::Lnot => crate::proto::UnoOp::Lnot,
             UnoOperation::Bnot => crate::proto::UnoOp::Bnot,
-        }
-    }
-}
-
-impl TryFrom<OperatorType> for UnoOperation {
-    type Error = String;
-    fn try_from(op: OperatorType) -> Result<Self, Self::Error> {
-        let err = Err("Not an unary operation".to_string());
-        match op {
-            OperatorType::Mul => err,
-            OperatorType::Div => err,
-            OperatorType::Add => err,
-            OperatorType::Sub => err,
-            OperatorType::Pow => err,
-            OperatorType::IntDiv => err,
-            OperatorType::Mod => err,
-            OperatorType::ShiftL => err,
-            OperatorType::ShiftR => err,
-            OperatorType::LesserEq => err,
-            OperatorType::GreaterEq => err,
-            OperatorType::Lesser => err,
-            OperatorType::Greater => err,
-            OperatorType::Eq(1) => err,
-            OperatorType::Eq(_) => err,
-            OperatorType::NotEq => err,
-            OperatorType::BoolOr => err,
-            OperatorType::BoolAnd => err,
-            OperatorType::BitOr => err,
-            OperatorType::BitAnd => err,
-            OperatorType::BitXor => err,
-            OperatorType::PrefixSub => Ok(UnoOperation::Neg),
-            OperatorType::BoolNot => Ok(UnoOperation::Lnot),
-            OperatorType::Complement => Ok(UnoOperation::Bnot),
-            OperatorType::ToAddress => Ok(UnoOperation::Id),
-            OperatorType::MulAddress => err,
-            OperatorType::AddAddress => err,
         }
     }
 }

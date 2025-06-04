@@ -3,6 +3,9 @@ name = "circom-witnesscalc"
 version = "0.2.0"
 edition = "2021"
 repository = "https://github.com/iden3/circom-witnesscalc"
+authors = ["Oleh Lomaka <oleg.lomaka@gmail.com>"]
+description = "Witness calculator for Circom circuits"
+license = "MIT OR Apache-2.0"
 
 [features]
 default = []
@@ -28,12 +31,6 @@ libc = "0.2.155"
 #parser = { path = "../circom/parser" }
 #type_analysis = { path = "../circom/type_analysis" }
 #constraint_generation = { path = "../circom/constraint_generation" }
-compiler = { git = "https://github.com/olomix/circom.git", branch = "master" }
-code_producers = { git = "https://github.com/olomix/circom.git", branch = "master" }
-program_structure = { git = "https://github.com/olomix/circom.git", branch = "master" }
-parser = { git = "https://github.com/olomix/circom.git", branch = "master" }
-type_analysis = { git = "https://github.com/olomix/circom.git", branch = "master" }
-constraint_generation = { git = "https://github.com/olomix/circom.git", branch = "master" }
 prost = "0.13.1"
 num-bigint = "0.4.6"
 num-traits = "0.2.19"
@@ -56,3 +53,6 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [build-dependencies]
 bindgen = "0.70.1"
 prost-build = "0.13.3"
+
+[workspace]
+members = ["extensions/build-circuit", "extensions/compiler"]

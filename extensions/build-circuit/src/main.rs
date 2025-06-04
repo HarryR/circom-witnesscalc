@@ -1,6 +1,6 @@
 use compiler::circuit_design::template::TemplateCode;
 use compiler::compiler_interface::{run_compiler, Circuit, Config, VCP};
-use compiler::intermediate_representation::ir_interface::{AddressType, ComputeBucket, CreateCmpBucket, FinalData, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, ReturnBucket, ReturnType, StatusInput, StoreBucket, ValueBucket, ValueType};
+use compiler::intermediate_representation::ir_interface::{AddressType, ComputeBucket, CreateCmpBucket, FinalData, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, OperatorType, ReturnBucket, ReturnType, StatusInput, StoreBucket, ValueBucket, ValueType};
 use constraint_generation::{build_circuit, BuildConfig};
 use program_structure::error_definition::Report;
 use std::collections::HashMap;
@@ -20,6 +20,71 @@ use circom_witnesscalc::{progress_bar, InputSignalsInfo};
 use circom_witnesscalc::field::{Field, FieldOperations, FieldOps, U254, U64};
 use circom_witnesscalc::graph::{Node, Operation, UnoOperation, TresOperation, Nodes, NodeConstErr, NodeIdx, NodesInterface, optimize, MMapNodes, NodesStorage};
 use circom_witnesscalc::storage::serialize_witnesscalc_graph;
+
+fn try_into_operation(op: OperatorType) -> Result<Operation, String> {
+    match op {
+        OperatorType::Mul => Ok(Operation::Mul),
+        OperatorType::Div => Ok(Operation::Div),
+        OperatorType::Add => Ok(Operation::Add),
+        OperatorType::Sub => Ok(Operation::Sub),
+        OperatorType::Pow => Ok(Operation::Pow),
+        OperatorType::IntDiv => Ok(Operation::Idiv),
+        OperatorType::Mod => Ok(Operation::Mod),
+        OperatorType::ShiftL => Ok(Operation::Shl),
+        OperatorType::ShiftR => Ok(Operation::Shr),
+        OperatorType::LesserEq => Ok(Operation::Leq),
+        OperatorType::GreaterEq => Ok(Operation::Geq),
+        OperatorType::Lesser => Ok(Operation::Lt),
+        OperatorType::Greater => Ok(Operation::Gt),
+        OperatorType::Eq(1) => Ok(Operation::Eq),
+        OperatorType::Eq(_) => todo!(),
+        OperatorType::NotEq => Ok(Operation::Neq),
+        OperatorType::BoolOr => Ok(Operation::Lor),
+        OperatorType::BoolAnd => Ok(Operation::Land),
+        OperatorType::BitOr => Ok(Operation::Bor),
+        OperatorType::BitAnd => Ok(Operation::Band),
+        OperatorType::BitXor => Ok(Operation::Bxor),
+        OperatorType::PrefixSub => Err("Not a binary operation".to_string()),
+        OperatorType::BoolNot => Err("Not a binary operation".to_string()),
+        OperatorType::Complement => Err("Not a binary operation".to_string()),
+        OperatorType::ToAddress => Err("Not a binary operation".to_string()),
+        OperatorType::MulAddress => Ok(Operation::Mul),
+        OperatorType::AddAddress => Ok(Operation::Add),
+    }
+}
+
+fn try_into_uno_operation(op: OperatorType) -> Result<UnoOperation, String> {
+    let err = Err("Not an unary operation".to_string());
+    match op {
+        OperatorType::Mul => err,
+        OperatorType::Div => err,
+        OperatorType::Add => err,
+        OperatorType::Sub => err,
+        OperatorType::Pow => err,
+        OperatorType::IntDiv => err,
+        OperatorType::Mod => err,
+        OperatorType::ShiftL => err,
+        OperatorType::ShiftR => err,
+        OperatorType::LesserEq => err,
+        OperatorType::GreaterEq => err,
+        OperatorType::Lesser => err,
+        OperatorType::Greater => err,
+        OperatorType::Eq(1) => err,
+        OperatorType::Eq(_) => err,
+        OperatorType::NotEq => err,
+        OperatorType::BoolOr => err,
+        OperatorType::BoolAnd => err,
+        OperatorType::BitOr => err,
+        OperatorType::BitAnd => err,
+        OperatorType::BitXor => err,
+        OperatorType::PrefixSub => Ok(UnoOperation::Neg),
+        OperatorType::BoolNot => Ok(UnoOperation::Lnot),
+        OperatorType::Complement => Ok(UnoOperation::Bnot),
+        OperatorType::ToAddress => Ok(UnoOperation::Id),
+        OperatorType::MulAddress => err,
+        OperatorType::AddAddress => err,
+    }
+}
 
 // if instruction pointer is a store to the signal, return the signal index
 // and the src instruction to store to the signal
@@ -45,7 +110,7 @@ fn try_signal_store<'a, T: FieldOps + 'static, NS: NodesStorage + 'static>(
             }
             let signal_idx =
                 calc_expression(ctx, location, cmp, print_debug, call_stack)
-                .must_const_usize(ctx.nodes, call_stack);
+                    .must_const_usize(ctx.nodes, call_stack);
 
             let signal_idx = cmp.signal_offset + signal_idx;
             Some((signal_idx, &store_bucket.src))
@@ -81,8 +146,8 @@ where
         },
         ValueType::U32 => {
             assert_eq!(n, 1,
-                "for ValueType::U32 number of values is expected to be 1; {}",
-                call_stack.join(" -> "));
+                       "for ValueType::U32 number of values is expected to be 1; {}",
+                       call_stack.join(" -> "));
             let v = (&nodes.ff).parse_usize(value_bucket.value).unwrap();
             vec![Var::Value(v)]
         },
@@ -120,7 +185,7 @@ where
                         let signal_idx =
                             calc_expression(
                                 ctx, location, cmp, print_debug, call_stack)
-                            .must_const_usize(ctx.nodes, call_stack);
+                                .must_const_usize(ctx.nodes, call_stack);
                         let mut result = Vec::with_capacity(size);
                         for i in 0..size {
                             let signal_node = ctx
@@ -141,7 +206,7 @@ where
                     let subcomponent_idx =
                         calc_expression(
                             ctx, cmp_address, cmp, print_debug, call_stack)
-                        .must_const_usize(ctx.nodes, call_stack);
+                            .must_const_usize(ctx.nodes, call_stack);
 
                     let (signal_idx, template_header) = match load_bucket.src {
                         LocationRule::Indexed {
@@ -202,7 +267,7 @@ where
                     let var_idx =
                         calc_expression(
                             ctx, location, cmp, print_debug, call_stack)
-                        .must_const_usize(ctx.nodes, call_stack);
+                            .must_const_usize(ctx.nodes, call_stack);
                     let mut result = Vec::with_capacity(size);
                     for i in 0..size {
                         match cmp.vars[var_idx+i] {
@@ -250,7 +315,7 @@ where
                         let signal_idx =
                             calc_expression(
                                 ctx, location, cmp, print_debug, call_stack)
-                            .must_const_usize(ctx.nodes, call_stack);
+                                .must_const_usize(ctx.nodes, call_stack);
                         let signal_idx = cmp.signal_offset + signal_idx;
                         let signal_node = ctx.signal_node_idx[signal_idx];
                         assert_ne!(signal_node, usize::MAX, "signal is not set yet");
@@ -266,7 +331,7 @@ where
                     let subcomponent_idx =
                         calc_expression(
                             ctx, cmp_address, cmp, print_debug, call_stack)
-                        .must_const_usize(ctx.nodes, call_stack);
+                            .must_const_usize(ctx.nodes, call_stack);
 
                     let (signal_idx, template_header) = match load_bucket.src {
                         LocationRule::Indexed {
@@ -276,7 +341,7 @@ where
                             let signal_idx =
                                 calc_expression(
                                     ctx, location, cmp, print_debug, call_stack)
-                                .must_const_usize(ctx.nodes, call_stack);
+                                    .must_const_usize(ctx.nodes, call_stack);
                             (signal_idx,
                              template_header.as_ref().unwrap_or(&"-".to_string()).clone())
                         }
@@ -308,7 +373,7 @@ where
                             let var_idx =
                                 calc_expression(
                                     ctx, location, cmp, print_debug, call_stack)
-                                .must_const_usize(ctx.nodes, call_stack);
+                                    .must_const_usize(ctx.nodes, call_stack);
                             match cmp.vars[var_idx] {
                                 Some(Var::Node(idx)) => idx,
                                 Some(Var::Value(ref v)) => {
@@ -359,13 +424,13 @@ fn node_from_compute_bucket<T: FieldOps + 'static, NS: NodesStorage + 'static>(
     print_debug: bool,
     call_stack: &Vec<String>,
 ) -> Node {
-    if let Ok(op) = TryInto::<Operation>::try_into(compute_bucket.op) {
+    if let Ok(op) = try_into_operation(compute_bucket.op) {
         let arg1 = operator_argument_instruction(
             ctx, cmp, &compute_bucket.stack[0], print_debug, call_stack);
         let arg2 = operator_argument_instruction(
             ctx, cmp, &compute_bucket.stack[1], print_debug, call_stack);
         Node::Op(op, arg1, arg2)
-    } else if let Ok(op) = TryInto::<UnoOperation>::try_into(compute_bucket.op) {
+    } else if let Ok(op) = try_into_uno_operation(compute_bucket.op) {
         let arg1 = operator_argument_instruction(
             ctx, cmp, &compute_bucket.stack[0], print_debug, call_stack);
         Node::UnoOp(op, arg1)
@@ -580,7 +645,7 @@ fn process_instruction<T: FieldOps + 'static, NS: NodesStorage + 'static>(
                             let signal_idx =
                                 calc_expression(
                                     ctx, location, cmp, print_debug, call_stack)
-                                .must_const_usize(ctx.nodes, call_stack);
+                                    .must_const_usize(ctx.nodes, call_stack);
 
                             if print_debug {
                                 println!(
@@ -627,7 +692,7 @@ fn process_instruction<T: FieldOps + 'static, NS: NodesStorage + 'static>(
                                 calc_expression(
                                     ctx, location, cmp, print_debug, call_stack
                                 )
-                                .must_const_usize(ctx.nodes, call_stack);
+                                    .must_const_usize(ctx.nodes, call_stack);
                             let var_exprs = calc_expression_n(
                                 ctx, &store_bucket.src, cmp,
                                 store_bucket.context.size, print_debug,
@@ -798,7 +863,7 @@ fn process_instruction<T: FieldOps + 'static, NS: NodesStorage + 'static>(
                 calc_expression(
                     ctx, &create_component_bucket.sub_cmp_id, cmp, print_debug,
                     call_stack)
-                .must_const_usize(ctx.nodes, call_stack);
+                    .must_const_usize(ctx.nodes, call_stack);
 
             assert!(
                 sub_cmp_idx + create_component_bucket.number_of_cmp - 1
@@ -1125,7 +1190,7 @@ fn node_from_var<T: FieldOps + 'static, NS: NodesStorage + 'static>(
     v: &Var<T>, nodes: &mut Nodes<T, NS>) -> usize {
 
     match v {
-        Var::Value(ref v) => {
+        Var::Value(v) => {
             nodes.const_node_idx_from_value(*v)
         }
         Var::Node(node_idx) => *node_idx,
@@ -1139,7 +1204,7 @@ where
     T: FieldOps + 'static,
     NS: NodesStorage + 'static {
 
-    if let Ok(op) = TryInto::<Operation>::try_into(compute_bucket.op) {
+    if let Ok(op) = try_into_operation(compute_bucket.op) {
         assert_eq!(compute_bucket.stack.len(), 2);
         let a = calc_function_expression(
             compute_bucket.stack.first().unwrap(), fn_vars,
@@ -1157,7 +1222,7 @@ where
                 Var::Node(nodes.push(Node::Op(op, a_idx, b_idx)).0)
             }
         }
-    } else if let Ok(op) = TryInto::<UnoOperation>::try_into(compute_bucket.op) {
+    } else if let Ok(op) = try_into_uno_operation(compute_bucket.op) {
         assert_eq!(compute_bucket.stack.len(), 1);
         let a = calc_function_expression(
             compute_bucket.stack.first().unwrap(), fn_vars, nodes, call_stack);
@@ -1254,7 +1319,7 @@ fn store_function_variable<T: FieldOps + 'static, NS: NodesStorage + 'static>(
     let lvar_idx =
         calc_function_expression(
             location, fn_vars, nodes, call_stack)
-        .must_const_usize(nodes, call_stack);
+            .must_const_usize(nodes, call_stack);
 
     assert_eq!(
         store_bucket.context.size, 1,
@@ -1295,7 +1360,7 @@ where
                             let lvar_idx =
                                 calc_function_expression(
                                     location, fn_vars, ctx.nodes, call_stack)
-                                .must_const_usize(ctx.nodes, call_stack);
+                                    .must_const_usize(ctx.nodes, call_stack);
                             if store_bucket.context.size == 1 {
                                 fn_vars[lvar_idx] = Some(calc_function_expression(
                                     &store_bucket.src, fn_vars, ctx.nodes,
@@ -1561,7 +1626,7 @@ enum Var<T: FieldOps> {
 impl<T: FieldOps> fmt::Display for Var<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Var::Value(ref c) => write!(f, "Var::Value({})", c),
+            Var::Value(c) => write!(f, "Var::Value({})", c),
             Var::Node(idx) => write!(f, "Var::Node({})", idx),
         }
     }
@@ -1634,7 +1699,7 @@ fn load_n<T: FieldOps + 'static, NS: NodesStorage + 'static>(
             let subcomponent_idx =
                 calc_expression(
                     ctx, cmp_address, cmp, print_debug, call_stack)
-                .must_const_usize(ctx.nodes, call_stack);
+                    .must_const_usize(ctx.nodes, call_stack);
 
             let (signal_idx, template_header) = match load_bucket.src {
                 LocationRule::Indexed {
@@ -1693,7 +1758,7 @@ fn load_n<T: FieldOps + 'static, NS: NodesStorage + 'static>(
             };
             let var_idx =
                 calc_expression(ctx, location, cmp, print_debug, call_stack)
-                .must_const_usize(ctx.nodes, call_stack);
+                    .must_const_usize(ctx.nodes, call_stack);
 
             let mut result: Vec<Var<T>> = Vec::with_capacity(size);
             for i in 0..size {
@@ -1720,7 +1785,7 @@ fn build_unary_op_var<T: FieldOps + 'static, NS: NodesStorage + 'static>(
         ctx, &stack[0], cmp, print_debug, call_stack);
 
     match &a {
-        Var::Value(ref a) => {
+        Var::Value(a) => {
             Var::Value((&ctx.nodes.ff).op_uno(op, *a))
         }
         Var::Node(node_idx) => {
@@ -1746,14 +1811,14 @@ fn build_binary_op_var<T: FieldOps + 'static, NS: NodesStorage + 'static>(
         ctx, &stack[1], cmp, print_debug, call_stack);
 
     let mut node_idx = |v: &Var<T>| match v {
-        Var::Value(ref c) => {
+        Var::Value(c) => {
             ctx.nodes.const_node_idx_from_value(*c)
         }
         Var::Node(idx) => { *idx }
     };
 
     match (&a, &b) {
-        (Var::Value(ref a), Var::Value(ref b)) => {
+        (Var::Value(a), Var::Value(b)) => {
             Var::Value((&ctx.nodes.ff).op_duo(op, *a, *b))
         }
         _ => {
@@ -1787,14 +1852,14 @@ fn calc_expression<T: FieldOps + 'static, NS: NodesStorage + 'static>(
         },
         Instruction::Compute(ref compute_bucket) => {
             // try duo operation
-            if let Ok(op) = Operation::try_from(compute_bucket.op) {
+            if let Ok(op) = try_into_operation(compute_bucket.op) {
                 build_binary_op_var(
                     ctx, cmp, op, &compute_bucket.stack, print_debug,
                     call_stack)
             }
 
             // try uno operation
-            else if let Ok(op) = UnoOperation::try_from(compute_bucket.op) {
+            else if let Ok(op) = try_into_uno_operation(compute_bucket.op) {
                 build_unary_op_var(
                     ctx, cmp, op, &compute_bucket.stack, print_debug,
                     call_stack)
@@ -2196,7 +2261,7 @@ fn main() {
 
     let (cw, vcp) =
         build_circuit(program_archive, build_config)
-        .unwrap();
+            .unwrap();
 
     if let Some(r1cs_file) = &args.r1cs {
         if cw.r1cs(r1cs_file, custom_gates).is_err() {
@@ -2343,7 +2408,7 @@ where
     NS: NodesStorage + 'static {
 
     let input_status: &StatusInput;
-    if let InputInformation::Input { ref status } = dst.input_information {
+    if let InputInformation::Input { status } = dst.input_information {
         input_status = status;
     } else {
         panic!("incorrect input information for subcomponent signal");
@@ -2351,19 +2416,19 @@ where
 
     let subcomponent_idx =
         calc_expression(ctx, dst.cmp_address, cmp, print_debug, call_stack)
-        .must_const_usize(ctx.nodes, call_stack);
+            .must_const_usize(ctx.nodes, call_stack);
 
     let (signal_idx, template_header) = match dst.dest {
         LocationRule::Indexed {
-            ref location,
-            ref template_header,
+            location,
+            template_header,
         } => {
             let signal_idx =
                 calc_expression(ctx, location, cmp, print_debug, call_stack)
-                .must_const_usize(ctx.nodes, call_stack);
+                    .must_const_usize(ctx.nodes, call_stack);
             (signal_idx, template_header.as_ref().unwrap_or(&"-".to_string()).clone())
         }
-        LocationRule::Mapped { ref signal_code, ref indexes } => {
+        LocationRule::Mapped { signal_code, indexes } => {
             calc_mapped_signal_idx(
                 ctx, cmp, subcomponent_idx, *signal_code, indexes, print_debug,
                 call_stack)
