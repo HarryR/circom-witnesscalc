@@ -170,6 +170,7 @@ impl TryFrom<usize> for U64 {
 
 impl FieldOps for U64 {
     const BITS: usize = 64;
+    const BYTES: usize = 8;
     const MAX: U64 = U64(u64::MAX);
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -261,9 +262,12 @@ impl FieldOps for U64 {
 
 pub type U254 = ruint::Uint<254, 4>;
 
+pub const bn254_prime: U254 = uint!(21888242871839275222246405745257275088548364400416034343698204186575808495617_U254);
+
 impl FieldOps for U254 {
 
     const BITS: usize = 254;
+    const BYTES: usize = 32;
     const MAX: U254 = U254::MAX;
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -318,6 +322,7 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
     + Eq + Hash + TryFrom<usize> + Display {
 
     const BITS: usize;
+    const BYTES: usize;
     const MAX: Self;
 
     fn from_str(v: &str) -> Result<Self, Box<dyn std::error::Error>>;
@@ -334,7 +339,7 @@ pub trait FieldOps: Sized + Copy + Zero + One + PartialEq + Sub<Output = Self>
 }
 
 pub trait FieldOperations {
-    type Type;
+    type Type: FieldOps;
 
     fn parse_str(&self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>>;
     fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error>>;
@@ -369,6 +374,7 @@ pub trait FieldOperations {
     fn neg(&self, lhs: Self::Type) -> Self::Type;
 }
 
+#[derive(Clone)]
 pub struct Field<T> where T: FieldOps {
     pub prime: T,
     halfPrime: T,
@@ -397,10 +403,7 @@ impl<T: FieldOps> Field<T> {
                 Err(_) => None,
             }
         } else {
-            match value.try_into() {
-                Ok(v) => Some(v),
-                Err(_) => None,
-            }
+            value.try_into().ok()
         }
     }
 }
@@ -408,13 +411,25 @@ impl<T: FieldOps> Field<T> {
 impl<T: FieldOps> FieldOperations for &Field<T> {
     type Type = T;
 
-    fn parse_str(&self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>> {
-        let v = T::from_str(v)?;
-        if v > self.prime {
-            Ok(v % self.prime)
+    fn parse_str(
+        &self, v: &str) -> Result<Self::Type, Box<dyn std::error::Error>> {
+
+        let (v, neg) = if let Some('-') = v.chars().nth(0) {
+            (&v[1..], true)
         } else {
-            Ok(v)
+            (v, false)
+        };
+
+        let mut v = T::from_str(v)?;
+        if v >= self.prime {
+            v = v % self.prime;
         }
+
+        if neg {
+            v = self.sub(Self::Type::zero(), v);
+        }
+
+        Ok(v)
     }
 
     fn parse_le_bytes(&self, v: &[u8]) -> Result<Self::Type, Box<dyn std::error::Error>> {
@@ -436,6 +451,46 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
             Ok(v % self.prime)
         } else {
             Ok(v)
+        }
+    }
+
+    fn op_uno(&self, op: UnoOperation, a: T) -> T {
+        match op {
+            UnoOperation::Neg => self.neg(a),
+            UnoOperation::Id => a,
+            UnoOperation::Lnot => self.lnot(a),
+            UnoOperation::Bnot => self.bnot(a),
+        }
+    }
+
+    fn op_duo(&self, op: Operation, a: T, b: T) -> T {
+        match op {
+            Operation::Mul => self.mul(a, b),
+            Operation::Div => self.div(a, b),
+            Operation::Add => self.add(a, b),
+            Operation::Sub => self.sub(a, b),
+            Operation::Pow => self.pow(a, b),
+            Operation::Idiv => self.idiv(a, b),
+            Operation::Mod => self.modulo(a, b),
+            Operation::Eq => self.eq(a, b),
+            Operation::Neq => self.neq(a, b),
+            Operation::Lt => self.lt(a, b),
+            Operation::Gt => self.gt(a, b),
+            Operation::Leq => self.lte(a, b),
+            Operation::Geq => self.gte(a, b),
+            Operation::Land => self.land(a, b),
+            Operation::Lor => self.lor(a, b),
+            Operation::Shl => self.shl(a, b),
+            Operation::Shr => self.shr(a, b),
+            Operation::Bor => self.bor(a, b),
+            Operation::Band => self.band(a, b),
+            Operation::Bxor => self.bxor(a, b),
+        }
+    }
+
+    fn op_tres(&self, op: TresOperation, a: T, b: T, c: T) -> T {
+        match op {
+            TresOperation::TernCond => if a.is_zero() { c } else { b }
         }
     }
 
@@ -558,6 +613,15 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
     }
 
     #[inline]
+    fn lnot(&self, lhs: Self::Type) -> Self::Type {
+        if lhs.is_zero() {
+            T::one()
+        } else {
+            T::zero()
+        }
+    }
+
+    #[inline]
     fn shl(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
         match self.to_isize(rhs) {
             Some(r) => {
@@ -621,16 +685,6 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
             r
         }
     }
-
-    #[inline]
-    fn idiv(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
-        if rhs.is_zero() {
-            T::zero()
-        } else {
-            lhs / rhs
-        }
-    }
-
     #[inline]
     fn bnot(&self, lhs: Self::Type) -> Self::Type {
         let lhs = lhs.not();
@@ -643,59 +697,20 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
     }
 
     #[inline]
+    fn idiv(&self, lhs: Self::Type, rhs: Self::Type) -> Self::Type {
+        if rhs.is_zero() {
+            T::zero()
+        } else {
+            lhs / rhs
+        }
+    }
+
+    #[inline]
     fn neg(&self, lhs: Self::Type) -> Self::Type {
         if lhs.is_zero() {
             T::zero()
         } else {
             self.prime - lhs
-        }
-    }
-
-    #[inline]
-    fn lnot(&self, lhs: Self::Type) -> Self::Type {
-        if lhs.is_zero() {
-            T::one()
-        } else {
-            T::zero()
-        }
-    }
-    fn op_uno(&self, op: UnoOperation, a: T) -> T {
-        match op {
-            UnoOperation::Neg => self.neg(a),
-            UnoOperation::Id => a,
-            UnoOperation::Lnot => self.lnot(a),
-            UnoOperation::Bnot => self.bnot(a),
-        }
-    }
-
-    fn op_duo(&self, op: Operation, a: T, b: T) -> T {
-        match op {
-            Operation::Mul => self.mul(a, b),
-            Operation::Div => self.div(a, b),
-            Operation::Add => self.add(a, b),
-            Operation::Sub => self.sub(a, b),
-            Operation::Pow => self.pow(a, b),
-            Operation::Idiv => self.idiv(a, b),
-            Operation::Mod => self.modulo(a, b),
-            Operation::Eq => self.eq(a, b),
-            Operation::Neq => self.neq(a, b),
-            Operation::Lt => self.lt(a, b),
-            Operation::Gt => self.gt(a, b),
-            Operation::Leq => self.lte(a, b),
-            Operation::Geq => self.gte(a, b),
-            Operation::Land => self.land(a, b),
-            Operation::Lor => self.lor(a, b),
-            Operation::Shl => self.shl(a, b),
-            Operation::Shr => self.shr(a, b),
-            Operation::Bor => self.bor(a, b),
-            Operation::Band => self.band(a, b),
-            Operation::Bxor => self.bxor(a, b),
-        }
-    }
-
-    fn op_tres(&self, op: TresOperation, a: T, b: T, c: T) -> T {
-        match op {
-            TresOperation::TernCond => if a.is_zero() { c } else { b }
         }
     }
 }
@@ -727,7 +742,7 @@ impl<T: FieldOps> FieldOperations for &Field<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::field::{Field, U64, FieldOperations, U254, FieldOps};
+    use crate::field::{Field, U64, FieldOperations, U254, FieldOps, bn254_prime};
     use num_traits::One;
     use ruint::aliases::U256;
 
@@ -1303,5 +1318,25 @@ mod tests {
         let bs = [1u8];
         let x = <U254 as FieldOps>::from_le_bytes(&bs).unwrap();
         assert_eq!(x, U254::one());
+    }
+
+    #[test]
+    fn test_field_parse_str() {
+        let ff = Field::new(bn254_prime);
+
+        let x = (&ff).parse_str("3").unwrap();
+        assert_eq!(x, U254::from_str("3").unwrap());
+
+        let x = (&ff).parse_str("21888242871839275222246405745257275088548364400416034343698204186575808495617").unwrap();
+        assert_eq!(x, U254::from_str("0").unwrap());
+
+        let x = (&ff).parse_str("21888242871839275222246405745257275088548364400416034343698204186575808495618").unwrap();
+        assert_eq!(x, U254::from_str("1").unwrap());
+
+        let x = (&ff).parse_str("-1").unwrap();
+        assert_eq!(x, U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495616").unwrap());
+
+        let x = (&ff).parse_str("-2").unwrap();
+        assert_eq!(x, U254::from_str("21888242871839275222246405745257275088548364400416034343698204186575808495615").unwrap());
     }
 }

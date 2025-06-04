@@ -6,6 +6,10 @@ pub mod field;
 pub mod graph;
 pub mod storage;
 pub mod vm;
+pub mod vm2;
+pub mod ast;
+
+pub mod parser;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
@@ -135,7 +139,7 @@ fn wtns_from_witness(witness: Vec<FieldElement<32>>) -> Vec<u8> {
     buf
 }
 
-fn wtns_from_witness2<const FS: usize, T: FieldOps>(
+pub fn wtns_from_witness2<const FS: usize, T: FieldOps>(
     witness: Vec<FieldElement<FS>>, prime: T) -> Vec<u8> {
 
     let mut buf = Vec::new();
