@@ -98,6 +98,15 @@ CLANG_PATH=${CC} \
 cargo build --target x86_64-linux-android --release
 ```
 
+### Alternative way to build for Android
+
+If you have cargo-ndk installed, you can build the project, for example,
+with the following command:
+
+```shell
+cargo ndk --target aarch64-linux-android build --release
+```
+
 
 ## Mobile wrappers. Releases with graph version only
 | Wrapper      | Repository Link                         | Version |

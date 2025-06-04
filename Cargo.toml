@@ -51,7 +51,11 @@ codegen-units = 1
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [build-dependencies]
-bindgen = "0.70.1"
+#bindgen = "0.71.1"
+# Using this version where this issue has already being fixed: https://github.com/rust-lang/rust-bindgen/issues/3181
+# version 'sim' in target triple 'aarch64-apple-ios-sim' is invalid
+# TODO: return to use a specific version once a new release with the fix is available
+bindgen = { git = "https://github.com/rust-lang/rust-bindgen", rev = "97ab9152b5edb1fda1ced9bc1604f5e4dc9cfaa9" }
 prost-build = "0.13.3"
 
 [workspace]
