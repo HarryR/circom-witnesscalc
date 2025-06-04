@@ -1,10 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
 use std::fmt::{Debug, Formatter};
 use std::io::{Error, ErrorKind, Read, Write};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use code_producers::c_elements::InputList;
-use code_producers::components::{IODef, TemplateInstanceIOMap};
 use prost::Message;
 use ruint::aliases::U256;
 use crate::field::{FieldOps, U254};
@@ -128,6 +126,18 @@ pub fn serialize_witnesscalc_graph<W, T, NS>(
 
     Ok(())
 }
+
+pub type InputList = Vec<(String, usize, usize)>;
+
+pub struct IODef {
+    pub code: usize,
+    pub offset: usize,
+    pub lengths: Vec<usize>,
+}
+
+pub type InputOutputList = Vec<IODef>;
+
+pub type TemplateInstanceIOMap = BTreeMap<usize, InputOutputList>;
 
 pub struct CompiledCircuit {
     pub main_template_id: usize,

@@ -93,7 +93,7 @@ for arg in "${library_paths[@]}"; do
 done
 
 pushd "${script_dir}" > /dev/null
-cargo build --release
+cargo build --release --workspace
 popd > /dev/null
 
 function test_circuit() {

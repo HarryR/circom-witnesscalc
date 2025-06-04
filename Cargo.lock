@@ -50,9 +50,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.97"
+version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
+checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
 name = "ark-bn254"
@@ -436,6 +436,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-circuit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "circom-witnesscalc",
+ "code_producers",
+ "compiler 2.1.9",
+ "constraint_generation",
+ "indicatif",
+ "parser",
+ "program_structure",
+ "ruint",
+ "type_analysis",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -484,16 +500,11 @@ dependencies = [
  "ark-serialize 0.5.0",
  "bindgen",
  "byteorder",
- "code_producers",
- "compiler",
- "constraint_generation",
  "indicatif",
  "libc",
  "memmap2",
  "num-bigint",
  "num-traits",
- "parser",
- "program_structure",
  "prost",
  "prost-build",
  "rand 0.8.5",
@@ -501,7 +512,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "type_analysis",
  "wtns-file",
 ]
 
@@ -558,6 +568,19 @@ dependencies = [
 
 [[package]]
 name = "compiler"
+version = "0.1.0"
+dependencies = [
+ "circom-witnesscalc",
+ "compiler 2.1.9",
+ "constraint_generation",
+ "parser",
+ "program_structure",
+ "ruint",
+ "type_analysis",
+]
+
+[[package]]
+name = "compiler"
 version = "2.1.9"
 source = "git+https://github.com/olomix/circom.git?branch=master#22de6cb3200ed673c53201d9007ecdf21013783a"
 dependencies = [
@@ -593,7 +616,7 @@ source = "git+https://github.com/olomix/circom.git?branch=master#22de6cb3200ed67
 dependencies = [
  "ansi_term",
  "circom_algebra",
- "compiler",
+ "compiler 2.1.9",
  "constraint_list",
  "constraint_writers",
  "dag",

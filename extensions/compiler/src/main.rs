@@ -7,19 +7,18 @@ use std::fs::File;
 use std::io::Write;
 use std::rc::Rc;
 use std::time::Instant;
-use code_producers::components::{IODef, TemplateInstanceIOMap};
 use compiler::circuit_design::function::FunctionCode;
 use compiler::circuit_design::template::TemplateCode;
 use compiler::compiler_interface::{run_compiler, Circuit, Config};
 use compiler::intermediate_representation::InstructionList;
-use compiler::intermediate_representation::ir_interface::{AddressType, ComputeBucket, CreateCmpBucket, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, OperatorType, ReturnType, ValueType};
+use compiler::intermediate_representation::ir_interface::{AddressType, ComputeBucket, CreateCmpBucket, InputInformation, Instruction, InstructionPointer, LoadBucket, LocationRule, ObtainMeta, OperatorType, ReturnType, StatusInput, ValueType};
 use constraint_generation::{build_circuit, BuildConfig};
 use program_structure::error_definition::Report;
 use ruint::aliases::U256;
 use type_analysis::check_types::check_types;
 use circom_witnesscalc::{deserialize_inputs, wtns_from_u256_witness};
 use circom_witnesscalc::graph::Operation;
-use circom_witnesscalc::storage::{serialize_witnesscalc_vm, CompiledCircuit, init_input_signals};
+use circom_witnesscalc::storage::{serialize_witnesscalc_vm, CompiledCircuit, init_input_signals, TemplateInstanceIOMap, IODef};
 use circom_witnesscalc::vm::{Function, Template, execute, build_component, ComponentTmpl, InputStatus, disassemble_instruction, OpCode};
 
 struct Args {
@@ -372,7 +371,7 @@ fn main() {
 
     let io_map: TemplateInstanceIOMap = circuit.c_producer.get_io_map().iter()
         .map(|(k, v)|(*k, v.iter()
-            .map(|x| IODef{
+            .map(|x| IODef {
                 code: x.code,
                 offset: x.offset,
                 lengths: x.lengths.clone()
@@ -485,6 +484,14 @@ fn patch_jump(code: &mut [u8], jump_offset_addr: usize, to: usize) {
     code[jump_offset_addr..jump_offset_addr+4].copy_from_slice(offset.to_le_bytes().as_ref());
 }
 
+fn into_input_status(status: &StatusInput) -> InputStatus {
+    match status {
+        StatusInput::Last => InputStatus::Last,
+        StatusInput::NoLast => InputStatus::NoLast,
+        StatusInput::Unknown => InputStatus::Unknown,
+    }
+}
+
 fn store_subsignal(
     ctx: &mut TmplCompilationCtx, dest: &LocationRule, line_no: usize,
     cmp_address: &InstructionPointer, input_information: &InputInformation,
@@ -493,7 +500,7 @@ fn store_subsignal(
     let mut indexes_number = 0u32;
     let mut signal_code = 0u32;
     let is_signal_idx_mapped = match dest {
-        LocationRule::Indexed { ref location, .. } => {
+        LocationRule::Indexed { location, .. } => {
             let sig_idx =
                 u32_or_expression(location, ctx.constants).unwrap();
 
@@ -517,7 +524,7 @@ fn store_subsignal(
 
             false
         }
-        LocationRule::Mapped { signal_code: ref signal_code_local, ref indexes } => {
+        LocationRule::Mapped { signal_code: signal_code_local, indexes } => {
             for idx_inst in indexes {
                 expression_u32(
                     idx_inst, &mut ctx.code, ctx.constants,
@@ -559,7 +566,6 @@ fn store_subsignal(
         }
     };
 
-
     ctx.code.push(OpCode::SetSubSignal as u8);
     ctx.line_numbers.push(line_no);
 
@@ -567,7 +573,7 @@ fn store_subsignal(
     for _ in 0..4 { ctx.line_numbers.push(usize::MAX); }
 
     let input_status: InputStatus = if let InputInformation::Input{ status } = input_information {
-        status.into()
+        into_input_status(status)
     } else {
         panic!("Can't store signal to non-input subcomponent");
     };
@@ -1509,7 +1515,7 @@ fn fn_expression_compute(
         }
         _ => {
             todo!("not implemented function expression operator {}: {}",
-                cb.op.to_string(), cb.to_string());
+                  cb.op.to_string(), cb.to_string());
         }
     };
     1
@@ -1546,7 +1552,7 @@ fn expression_compute_u32(
         }
         _ => {
             todo!("not implemented expression operator {}: {}",
-                cb.op.to_string(), cb.to_string());
+                  cb.op.to_string(), cb.to_string());
         }
     };
 }
@@ -1579,7 +1585,7 @@ fn fn_expression_compute_u32(
         }
         _ => {
             todo!("not implemented function expression operator {}: {}",
-                cb.op.to_string(), cb.to_string());
+                  cb.op.to_string(), cb.to_string());
         }
     };
 }
@@ -1995,7 +2001,7 @@ mod tests {
         }));
         expression(
             &inst, &mut code, &constants, &mut vec![],
-            &mut vec![]);
+            &[]);
         assert_eq!(code, vec![OpCode::Push8 as u8, 42, 0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -2010,7 +2016,7 @@ mod tests {
             op_aux_no: 0,
             value: 42,
         }));
-        expression(&inst, &mut code, &constants, &mut vec![], &mut vec![]);
+        expression(&inst, &mut code, &constants, &mut vec![], &[]);
         assert_eq!(code, vec![OpCode::GetConstant8 as u8, 42, 0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -2347,9 +2353,9 @@ STORE(
         let j = bigint_to_u64(i);
         assert!(matches!(j, Some(u64::MAX)));
 
-        i = i * uint!(2_U256);
+        i *= uint!(2_U256);
         let j = bigint_to_u64(i);
-        assert!(matches!(j, None));
+        assert!(j.is_none());
     }
 
     #[test]
@@ -2438,8 +2444,7 @@ STORE(
     #[test]
     fn test_dump() {
         let noop = OpCode::NoOp as u8;
-        let mut code = vec![];
-        code.push(noop);
+        let code = vec![noop];
         let c = Component{
             vars: vec![],
             signals_start: 0,
@@ -2460,11 +2465,11 @@ STORE(
         let mut signals = vec![None; 10];
         let io_map = BTreeMap::new();
         execute(
-            component, &templates, &vec![], &constants, &mut signals,
+            component, &templates, &[], &constants, &mut signals,
             &io_map, None);
     }
 
-    fn names_from_fn_vec(fns: &Vec<Function>) -> Vec<String> {
+    fn names_from_fn_vec(fns: &[Function]) -> Vec<String> {
         fns.iter().map(|f| f.name.clone()).collect()
     }
 

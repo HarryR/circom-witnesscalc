@@ -3,11 +3,10 @@ use std::cmp::Ordering;
 use std::fmt::{Debug, Display};
 use std::num::TryFromIntError;
 use std::rc::Rc;
-use code_producers::c_elements::TemplateInstanceIOMap;
-use compiler::intermediate_representation::ir_interface::StatusInput;
 use ruint::aliases::U256;
 use crate::field::M;
 use crate::graph::{Operation, UnoOperation};
+use crate::storage::TemplateInstanceIOMap;
 
 pub struct Component {
     pub vars: Vec<Option<U256>>,
@@ -425,16 +424,6 @@ impl TryFrom<u8> for InputStatus {
             1 => Ok(InputStatus::NoLast),
             2 => Ok(InputStatus::Unknown),
             _ => Err(()),
-        }
-    }
-}
-
-impl From<&StatusInput> for InputStatus {
-    fn from(status: &StatusInput) -> Self {
-        match status {
-            StatusInput::Last => InputStatus::Last,
-            StatusInput::NoLast => InputStatus::NoLast,
-            StatusInput::Unknown => InputStatus::Unknown,
         }
     }
 }
