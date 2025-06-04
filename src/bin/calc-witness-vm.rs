@@ -5,11 +5,10 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 use std::time::Instant;
-use code_producers::c_elements::{InputList};
 use ruint::aliases::U256;
 use circom_witnesscalc::{wtns_from_u256_witness, Error};
 use circom_witnesscalc::Error::InputsUnmarshal;
-use circom_witnesscalc::storage::deserialize_witnesscalc_vm;
+use circom_witnesscalc::storage::{deserialize_witnesscalc_vm, InputList};
 use circom_witnesscalc::vm::{build_component, execute, Template};
 
 struct Args {
