@@ -52,12 +52,14 @@ template Pos(nInputs) {
     signal input a;
     signal input b;
     signal output c;
+    signal output d;
 
     var t = nInputs + 1;
 	var x[2][2] = [[1, 2], [3, 4]];
 	var C[3][3] = f1(t, x);
 
 	c <== a * C[0][0] * b;
+	d <== c + C[2][2];
 }
 
 component main = Pos(2);
