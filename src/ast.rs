@@ -260,6 +260,7 @@ pub enum Statement {
     Loop(Vec<TemplateInstruction>),
     Break,
     Continue,
+    FfMReturn { dst: I64Operand, src: I64Operand, size: I64Operand },
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]

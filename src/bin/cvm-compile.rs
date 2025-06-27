@@ -700,6 +700,11 @@ where
                 ast::Statement::Error { code } => {
                     operand_i64(ctx, code);
                     ctx.code.push(OpCode::Error as u8);
+                },
+                ast::Statement::FfMReturn { dst: _, src: _, size: _ } => {
+                    // TODO: Implement ff.mreturn memory return operation
+                    // This requires adding a new OpCode for memory return operations
+                    return Err("ff.mreturn operation not yet implemented in VM".into());
                 }
             }
         }

@@ -379,13 +379,19 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
         },
         "i64.if" => parse_branch_with_condition(parse_i64_expression, Expr::I64),
         "ff.if" => parse_branch_with_condition(parse_ff_expression, Expr::Ff),
+        "ff.mreturn" => (
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand),
+            preceded(space1, parse_i64_operand))
+            .map(
+                |(op1, op2, op3)| Statement::FfMReturn{ dst: op1, src: op2, size: op3 }),
         _ => fail::<_, Statement, _>,
     }
         .parse_next(input)?;
 
-    // For set_signal, ff.store, set_cmp_input_run, and error, we need to parse the line end
+    // For set_signal, ff.store, set_cmp_input_run, error, and ff.mreturn, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -1886,6 +1892,51 @@ x";
         );
         let i64_expr = consume_parse_result(parse_i64_expression.parse(input));
         assert_eq!(want, i64_expr);
+    }
+
+    #[test]
+    fn test_parse_ff_mreturn() {
+        // Test with literal operands
+        let input = "ff.mreturn i64.1 i64.32 i64.4";
+        let want = Statement::FfMReturn {
+            dst: I64Operand::Literal(1),
+            src: I64Operand::Literal(32),
+            size: I64Operand::Literal(4),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with variable operands
+        let input = "ff.mreturn x_1 x_32 x_34";
+        let want = Statement::FfMReturn {
+            dst: I64Operand::Variable("x_1".to_string()),
+            src: I64Operand::Variable("x_32".to_string()),
+            size: I64Operand::Variable("x_34".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with mixed operands
+        let input = "ff.mreturn x_1 i64.10 x_size";
+        let want = Statement::FfMReturn {
+            dst: I64Operand::Variable("x_1".to_string()),
+            src: I64Operand::Literal(10),
+            size: I64Operand::Variable("x_size".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with comment at end of line
+        let mut input = "ff.mreturn x_1 x_49 x_51 ;; returning values
+x";
+        let want = Statement::FfMReturn {
+            dst: I64Operand::Variable("x_1".to_string()),
+            src: I64Operand::Variable("x_49".to_string()),
+            size: I64Operand::Variable("x_51".to_string()),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("x", input);
     }
 
 
