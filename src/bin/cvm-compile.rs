@@ -505,6 +505,26 @@ fn i64_expression(
             i64_expression(ctx, lhs)?;
             ctx.code.push(OpCode::OpI64Sub as u8);
         }
+        ast::I64Expr::Mul(_lhs, _rhs) => {
+            // TODO: Implement i64.mul operation
+            // This requires adding a new OpCode for i64 multiplication
+            return Err("i64.mul operation not yet implemented in VM".into());
+        }
+        ast::I64Expr::Lte(_lhs, _rhs) => {
+            // TODO: Implement i64.le operation
+            // This requires adding a new OpCode for i64 less-than-or-equal comparison
+            return Err("i64.le operation not yet implemented in VM".into());
+        }
+        ast::I64Expr::Load(_addr) => {
+            // TODO: Implement i64.load memory operation
+            // This requires adding a new OpCode for memory load operations
+            return Err("i64.load operation not yet implemented in VM".into());
+        }
+        ast::I64Expr::Wrap(_ff_expr) => {
+            // TODO: Implement i64.wrap_ff operation
+            // This requires adding a new OpCode for wrapping FF values to i64
+            return Err("i64.wrap_ff operation not yet implemented in VM".into());
+        }
     }
     Ok(())
 }
@@ -569,6 +589,16 @@ where
             let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
         },
+        ast::FfExpr::Load(_idx) => {
+            // TODO: Implement ff.load memory operation
+            // This requires adding a new OpCode for memory load operations
+            return Err("ff.load operation not yet implemented in VM".into());
+        },
+        ast::FfExpr::Lt(_lhs, _rhs) => {
+            // TODO: Implement ff.lt comparison operation
+            // This requires adding a new OpCode for less-than comparison
+            return Err("ff.lt operation not yet implemented in VM".into());
+        },
     };
     Ok(())
 }
@@ -598,6 +628,11 @@ where
                     ff_expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
+                },
+                ast::Statement::FfStore { idx: _, value: _ } => {
+                    // TODO: Implement ff.store memory operation
+                    // This requires adding a new OpCode for memory store operations
+                    return Err("ff.store operation not yet implemented in VM".into());
                 },
                 ast::Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
                     operand_i64(ctx, cmp_idx);
