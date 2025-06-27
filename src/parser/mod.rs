@@ -5,7 +5,7 @@ use winnow::{ModalResult};
 use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail, opt, cut_err, trace, eof, delimited};
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
-use crate::ast::{FfAssignment, I64Assignment, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST, Function};
+use crate::ast::{CallArgument, FfAssignment, I64Assignment, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST, Function};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
     let (bi, ): (BigUint, ) = seq!(
@@ -145,6 +145,28 @@ fn parse_ff_expr(input: &mut &str) -> ModalResult<FfExpr> {
     } else {
         fail.parse_next(input)?
     }
+}
+
+fn parse_call_argument(input: &mut &str) -> ModalResult<CallArgument> {
+    alt((
+        // Try to parse memory operations first (more specific)
+        dispatch! {parse_operator_name;
+            "i64.memory" => delimited(
+                literal("("),
+                (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
+                literal(")")
+            ).map(|(addr, size)| CallArgument::I64Memory { addr, size }),
+            "ff.memory" => delimited(
+                literal("("),
+                (parse_i64_operand, preceded(literal(","), parse_i64_operand)),
+                literal(")")
+            ).map(|(addr, size)| CallArgument::FfMemory { addr, size }),
+            _ => fail::<_, CallArgument, _>,
+        },
+        // Try to parse literals
+        parse_i64_literal.map(CallArgument::I64Literal),
+        parse_ff_literal.map(CallArgument::FfLiteral),
+    )).parse_next(input)
 }
 
 fn parse_variable_name<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
@@ -385,13 +407,29 @@ fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
             preceded(space1, parse_i64_operand))
             .map(
                 |(op1, op2, op3)| Statement::FfMReturn{ dst: op1, src: op2, size: op3 }),
+        "ff.mcall" => {
+            |i: &mut &str| {
+                // Parse the function name prefixed with $
+                let _ = space1.parse_next(i)?;
+                let _ = literal("$").parse_next(i)?;
+                let name = parse_variable_name.parse_next(i)?;
+                
+                // Parse the arguments using a proper repeat parser
+                let args = repeat(0.., preceded(space1, parse_call_argument)).parse_next(i)?;
+                
+                Ok(Statement::FfMCall {
+                    name: name.to_string(),
+                    args,
+                })
+            }
+        },
         _ => fail::<_, Statement, _>,
     }
         .parse_next(input)?;
 
-    // For set_signal, ff.store, set_cmp_input_run, error, and ff.mreturn, we need to parse the line end
+    // For set_signal, ff.store, set_cmp_input_run, error, ff.mreturn, and ff.mcall, we need to parse the line end
     match &s {
-        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } => {
+        Statement::SetSignal { .. } | Statement::FfStore { .. } | Statement::SetCmpSignalRun { .. } | Statement::Error { .. } | Statement::FfMReturn { .. } | Statement::FfMCall { .. } => {
             (space0, opt(parse_eol_comment), parse_line_end).parse_next(input)?;
         }
         _ => {}
@@ -1937,6 +1975,149 @@ x";
         let statement = parse_statement.parse_next(&mut input).unwrap();
         assert_eq!(statement, want);
         assert_eq!("x", input);
+    }
+
+    #[test]
+    fn test_parse_call_argument() {
+        // Test individual call argument parsing first
+        let input = "i64.6";
+        let want = CallArgument::I64Literal(6);
+        let arg = parse_call_argument.parse(input).unwrap();
+        assert_eq!(arg, want);
+
+        let input = "ff.3";
+        let want = CallArgument::FfLiteral(BigUint::from(3u32));
+        let arg = parse_call_argument.parse(input).unwrap();
+        assert_eq!(arg, want);
+
+        let input = "ff.memory(i64.2,i64.4)";
+        let want = CallArgument::FfMemory {
+            addr: I64Operand::Literal(2),
+            size: I64Operand::Literal(4),
+        };
+        let arg = parse_call_argument.parse(input).unwrap();
+        assert_eq!(arg, want);
+
+        let input = "i64.memory(i64.10,i64.20)";
+        let want = CallArgument::I64Memory {
+            addr: I64Operand::Literal(10),
+            size: I64Operand::Literal(20),
+        };
+        let arg = parse_call_argument.parse(input).unwrap();
+        assert_eq!(arg, want);
+    }
+
+    #[test]
+    fn test_parse_ff_mcall() {
+        // Test with simple case first
+        let input = "ff.mcall $f1_0 i64.6";
+        let want = Statement::FfMCall {
+            name: "f1_0".to_string(),
+            args: vec![
+                CallArgument::I64Literal(6),
+            ],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with basic example: ff.mcall $f1_0 i64.6 i64.9 ff.3 ff.memory(i64.2,i64.4)
+        let input = "ff.mcall $f1_0 i64.6 i64.9 ff.3 ff.memory(i64.2,i64.4)";
+        let want = Statement::FfMCall {
+            name: "f1_0".to_string(),
+            args: vec![
+                CallArgument::I64Literal(6),
+                CallArgument::I64Literal(9),
+                CallArgument::FfLiteral(BigUint::from(3u32)),
+                CallArgument::FfMemory {
+                    addr: I64Operand::Literal(2),
+                    size: I64Operand::Literal(4),
+                },
+            ],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with i64.memory
+        let input = "ff.mcall $test_func i64.memory(i64.10,i64.20) ff.42";
+        let want = Statement::FfMCall {
+            name: "test_func".to_string(),
+            args: vec![
+                CallArgument::I64Memory {
+                    addr: I64Operand::Literal(10),
+                    size: I64Operand::Literal(20),
+                },
+                CallArgument::FfLiteral(BigUint::from(42u32)),
+            ],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with variable operands in memory calls
+        let input = "ff.mcall $my_function ff.memory(x_addr,x_size) i64.100";
+        let want = Statement::FfMCall {
+            name: "my_function".to_string(),
+            args: vec![
+                CallArgument::FfMemory {
+                    addr: I64Operand::Variable("x_addr".to_string()),
+                    size: I64Operand::Variable("x_size".to_string()),
+                },
+                CallArgument::I64Literal(100),
+            ],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with mixed memory calls
+        let input = "ff.mcall $func i64.memory(i64.5,x_count) ff.memory(x_base,i64.8)";
+        let want = Statement::FfMCall {
+            name: "func".to_string(),
+            args: vec![
+                CallArgument::I64Memory {
+                    addr: I64Operand::Literal(5),
+                    size: I64Operand::Variable("x_count".to_string()),
+                },
+                CallArgument::FfMemory {
+                    addr: I64Operand::Variable("x_base".to_string()),
+                    size: I64Operand::Literal(8),
+                },
+            ],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with comment at end of line
+        let mut input = "ff.mcall $calculator ff.12345 i64.67890 ;; function call with args
+x";
+        let want = Statement::FfMCall {
+            name: "calculator".to_string(),
+            args: vec![
+                CallArgument::FfLiteral(BigUint::from(12345u32)),
+                CallArgument::I64Literal(67890),
+            ],
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("x", input);
+
+        // Test with no arguments
+        let input = "ff.mcall $empty_func";
+        let want = Statement::FfMCall {
+            name: "empty_func".to_string(),
+            args: vec![],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with large FF literal
+        let input = "ff.mcall $big_number_func ff.21888242871839275222246405745257275088548364400416034343698204186575808495617";
+        let want = Statement::FfMCall {
+            name: "big_number_func".to_string(),
+            args: vec![
+                CallArgument::FfLiteral(BigUint::from_str_radix("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10).unwrap()),
+            ],
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
     }
 
 

@@ -238,6 +238,14 @@ pub struct I64Assignment {
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum CallArgument {
+    I64Literal(i64),
+    FfLiteral(BigUint),
+    I64Memory { addr: I64Operand, size: I64Operand },
+    FfMemory { addr: I64Operand, size: I64Operand },
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Statement {
     SetSignal { idx: I64Operand, value: FfExpr },
     FfStore { idx: I64Operand, value: FfExpr },
@@ -261,6 +269,10 @@ pub enum Statement {
     Break,
     Continue,
     FfMReturn { dst: I64Operand, src: I64Operand, size: I64Operand },
+    FfMCall {
+        name: String,
+        args: Vec<CallArgument>,
+    } 
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]

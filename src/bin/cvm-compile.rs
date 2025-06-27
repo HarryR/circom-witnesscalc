@@ -705,6 +705,11 @@ where
                     // TODO: Implement ff.mreturn memory return operation
                     // This requires adding a new OpCode for memory return operations
                     return Err("ff.mreturn operation not yet implemented in VM".into());
+                },
+                ast::Statement::FfMCall { name: _, args: _ } => {
+                    // TODO: Implement ff.mcall function call operation
+                    // This requires adding a new OpCode for function calls
+                    return Err("ff.mcall operation not yet implemented in VM".into());
                 }
             }
         }
