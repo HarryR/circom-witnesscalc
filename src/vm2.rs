@@ -74,6 +74,37 @@ pub enum OpCode {
     //   For literals: value bytes (8 for i64, T::BYTES for ff)
     //   For memory: 2 i64 addresses (addr and size)
     FfMCall              = 26,
+    // Memory store operation (ff.store)
+    // stack_ff:0 contains the value to store
+    // stack_i64:0 contains the memory address
+    FfStore              = 27,
+    // Memory load operation (ff.load)
+    // stack_i64:0 contains the memory address
+    // Result pushed to stack_ff
+    FfLoad               = 28,
+    // Memory load operation (i64.load)
+    // stack_i64:0 contains the memory address
+    // Result pushed to stack_i64
+    I64Load              = 29,
+    // Field less-than comparison (ff.lt)
+    // stack_ff:0 contains right operand
+    // stack_ff:-1 contains left operand
+    // Result pushed to stack_ff (1 if lhs < rhs, 0 otherwise)
+    OpLt                 = 30,
+    // Integer multiplication (i64.mul)
+    // stack_i64:0 contains right operand
+    // stack_i64:-1 contains left operand
+    // Result pushed to stack_i64
+    OpI64Mul             = 31,
+    // Integer less-than-or-equal comparison (i64.le)
+    // stack_i64:0 contains right operand
+    // stack_i64:-1 contains left operand
+    // Result pushed to stack_i64 (1 if lhs <= rhs, 0 otherwise)
+    OpI64Lte             = 32,
+    // Wrap field element to i64 (i64.wrap_ff)
+    // stack_ff:0 contains the field element
+    // Result pushed to stack_i64
+    I64WrapFf            = 33,
 }
 
 pub struct Component {
@@ -348,6 +379,27 @@ where
             
             println!("]");
         }
+        OpCode::FfStore => {
+            println!("FfStore");
+        }
+        OpCode::FfLoad => {
+            println!("FfLoad");
+        }
+        OpCode::I64Load => {
+            println!("I64Load");
+        }
+        OpCode::OpLt => {
+            println!("OpLt");
+        }
+        OpCode::OpI64Mul => {
+            println!("OpI64Mul");
+        }
+        OpCode::OpI64Lte => {
+            println!("OpI64Lte");
+        }
+        OpCode::I64WrapFf => {
+            println!("I64WrapFf");
+        }
     }
 
     ip
@@ -613,6 +665,36 @@ where
                 // This would read function index and arguments from bytecode
                 // and execute the function
                 return Err(Box::new(RuntimeError::Assertion(-2)));
+            }
+            OpCode::FfStore => {
+                // TODO: Implement memory store operation
+                return Err(Box::new(RuntimeError::Assertion(-3)));
+            }
+            OpCode::FfLoad => {
+                // TODO: Implement memory load operation
+                return Err(Box::new(RuntimeError::Assertion(-4)));
+            }
+            OpCode::I64Load => {
+                // TODO: Implement memory load operation
+                return Err(Box::new(RuntimeError::Assertion(-5)));
+            }
+            OpCode::OpLt => {
+                // TODO: Implement field less-than comparison
+                return Err(Box::new(RuntimeError::Assertion(-6)));
+            }
+            OpCode::OpI64Mul => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(lhs * rhs);
+            }
+            OpCode::OpI64Lte => {
+                let lhs = vm.pop_i64()?;
+                let rhs = vm.pop_i64()?;
+                vm.push_i64(if lhs <= rhs { 1 } else { 0 });
+            }
+            OpCode::I64WrapFf => {
+                // TODO: Implement ff to i64 wrapping
+                return Err(Box::new(RuntimeError::Assertion(-7)));
             }
         }
     }

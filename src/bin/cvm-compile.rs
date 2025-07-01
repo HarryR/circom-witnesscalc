@@ -481,9 +481,11 @@ fn operand_i64(
     }
 }
 
-fn i64_expression(
-    ctx: &mut TemplateCompilationContext,
-    expr: &ast::I64Expr) -> Result<(), Box<dyn Error>> {
+fn i64_expression<F>(
+    ctx: &mut TemplateCompilationContext, ff: &F,
+    expr: &ast::I64Expr) -> Result<(), Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations {
     
     match expr {
         ast::I64Expr::Variable(var_name) => {
@@ -496,34 +498,32 @@ fn i64_expression(
             ctx.code.extend_from_slice(value.to_le_bytes().as_slice());
         }
         ast::I64Expr::Add(lhs, rhs) => {
-            i64_expression(ctx, rhs)?;
-            i64_expression(ctx, lhs)?;
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Add as u8);
         }
         ast::I64Expr::Sub(lhs, rhs) => {
-            i64_expression(ctx, rhs)?;
-            i64_expression(ctx, lhs)?;
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Sub as u8);
         }
-        ast::I64Expr::Mul(_lhs, _rhs) => {
-            // TODO: Implement i64.mul operation
-            // This requires adding a new OpCode for i64 multiplication
-            return Err("i64.mul operation not yet implemented in VM".into());
+        ast::I64Expr::Mul(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Mul as u8);
         }
-        ast::I64Expr::Lte(_lhs, _rhs) => {
-            // TODO: Implement i64.le operation
-            // This requires adding a new OpCode for i64 less-than-or-equal comparison
-            return Err("i64.le operation not yet implemented in VM".into());
+        ast::I64Expr::Lte(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Lte as u8);
         }
-        ast::I64Expr::Load(_addr) => {
-            // TODO: Implement i64.load memory operation
-            // This requires adding a new OpCode for memory load operations
-            return Err("i64.load operation not yet implemented in VM".into());
+        ast::I64Expr::Load(addr) => {
+            operand_i64(ctx, addr);
+            ctx.code.push(OpCode::I64Load as u8);
         }
-        ast::I64Expr::Wrap(_ff_expr) => {
-            // TODO: Implement i64.wrap_ff operation
-            // This requires adding a new OpCode for wrapping FF values to i64
-            return Err("i64.wrap_ff operation not yet implemented in VM".into());
+        ast::I64Expr::Wrap(ff_expr) => {
+            ff_expression(ctx, ff, ff_expr)?;
+            ctx.code.push(OpCode::I64WrapFf as u8);
         }
     }
     Ok(())
@@ -589,15 +589,14 @@ where
             let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
         },
-        ast::FfExpr::Load(_idx) => {
-            // TODO: Implement ff.load memory operation
-            // This requires adding a new OpCode for memory load operations
-            return Err("ff.load operation not yet implemented in VM".into());
+        ast::FfExpr::Load(idx) => {
+            operand_i64(ctx, idx);
+            ctx.code.push(OpCode::FfLoad as u8);
         },
-        ast::FfExpr::Lt(_lhs, _rhs) => {
-            // TODO: Implement ff.lt comparison operation
-            // This requires adding a new OpCode for less-than comparison
-            return Err("ff.lt operation not yet implemented in VM".into());
+        ast::FfExpr::Lt(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpLt as u8);
         },
     };
     Ok(())
@@ -617,7 +616,7 @@ where
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }
         ast::TemplateInstruction::I64Assignment(assignment) => {
-            i64_expression(ctx, &assignment.value)?;
+            i64_expression(ctx, ff, &assignment.value)?;
             ctx.code.push(OpCode::StoreVariableI64 as u8);
             let var_idx = ctx.get_i64_variable_index(&assignment.dest);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
@@ -629,10 +628,10 @@ where
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
                 },
-                ast::Statement::FfStore { idx: _, value: _ } => {
-                    // TODO: Implement ff.store memory operation
-                    // This requires adding a new OpCode for memory store operations
-                    return Err("ff.store operation not yet implemented in VM".into());
+                ast::Statement::FfStore { idx, value } => {
+                    ff_expression(ctx, ff, value)?;
+                    operand_i64(ctx, idx);
+                    ctx.code.push(OpCode::FfStore as u8);
                 },
                 ast::Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
                     operand_i64(ctx, cmp_idx);
@@ -641,8 +640,8 @@ where
                     ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
                 },
                 ast::Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
-                    i64_expression(ctx, cmp_idx)?;
-                    i64_expression(ctx, sig_idx)?;
+                    i64_expression(ctx, ff, cmp_idx)?;
+                    i64_expression(ctx, ff, sig_idx)?;
                     ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpInput as u8);
                 },
@@ -653,7 +652,7 @@ where
                             pre_emit_jump_if_false(&mut ctx.code, true)
                         },
                         ast::Expr::I64(expr) => {
-                            i64_expression(ctx, expr)?;
+                            i64_expression(ctx, ff, expr)?;
                             pre_emit_jump_if_false(&mut ctx.code, false)
                         },
                     };
@@ -777,7 +776,6 @@ where
                             }
                         }
                     }
-                    todo!();
                 }
             }
         }
