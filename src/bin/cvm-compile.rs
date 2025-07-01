@@ -701,15 +701,83 @@ where
                     operand_i64(ctx, code);
                     ctx.code.push(OpCode::Error as u8);
                 },
-                ast::Statement::FfMReturn { dst: _, src: _, size: _ } => {
-                    // TODO: Implement ff.mreturn memory return operation
-                    // This requires adding a new OpCode for memory return operations
-                    return Err("ff.mreturn operation not yet implemented in VM".into());
+                ast::Statement::FfMReturn { dst, src, size } => {
+                    // Push operands in reverse order so they are popped in correct order
+                    // The VM expects: stack[-2]=dst, stack[-1]=src, stack[0]=size
+                    operand_i64(ctx, dst);
+                    operand_i64(ctx, src);
+                    operand_i64(ctx, size);
+                    ctx.code.push(OpCode::FfMReturn as u8);
                 },
-                ast::Statement::FfMCall { name: _, args: _ } => {
-                    // TODO: Implement ff.mcall function call operation
-                    // This requires adding a new OpCode for function calls
-                    return Err("ff.mcall operation not yet implemented in VM".into());
+                ast::Statement::FfMCall { name: _name, args } => {
+                    // Emit the FfMCall opcode
+                    ctx.code.push(OpCode::FfMCall as u8);
+                    
+                    // TODO: Look up function by name to get its index
+                    // For now, use a placeholder index of 0
+                    let func_idx: u32 = 0;
+                    ctx.code.extend_from_slice(&func_idx.to_le_bytes());
+                    
+                    // Emit argument count
+                    ctx.code.push(args.len() as u8);
+                    
+                    // Emit each argument
+                    for arg in args {
+                        match arg {
+                            ast::CallArgument::I64Literal(value) => {
+                                ctx.code.push(0); // arg type 0 = i64 literal
+                                ctx.code.extend_from_slice(&value.to_le_bytes());
+                            }
+                            ast::CallArgument::FfLiteral(value) => {
+                                ctx.code.push(1); // arg type 1 = ff literal
+                                let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                                ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
+                            }
+                            ast::CallArgument::I64Memory { addr, size } => {
+                                ctx.code.push(2); // arg type 2 = i64 memory
+                                match addr {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                                match size {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                            }
+                            ast::CallArgument::FfMemory { addr, size } => {
+                                ctx.code.push(3); // arg type 3 = ff memory
+                                match addr {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                                match size {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    todo!();
                 }
             }
         }

@@ -61,6 +61,19 @@ pub enum OpCode {
     OpEqz                = 22,
     OpI64Add             = 23,
     OpI64Sub             = 24,
+    // Memory return operation
+    // Copy data from source memory to destination memory
+    // stack_i64:0 contains the size (number of elements)
+    // stack_i64:-1 contains the source address
+    // stack_i64:-2 contains the destination address
+    FfMReturn            = 25,
+    // Function call operation
+    // arguments: 4-byte function index + 1-byte argument count
+    // Then for each argument:
+    //   1-byte argument type (0=i64 literal, 1=ff literal, 2=i64 memory, 3=ff memory)
+    //   For literals: value bytes (8 for i64, T::BYTES for ff)
+    //   For memory: 2 i64 addresses (addr and size)
+    FfMCall              = 26,
 }
 
 pub struct Component {
@@ -278,6 +291,62 @@ where
         }
         OpCode::Error => {
             println!("Error");
+        }
+        OpCode::FfMReturn => {
+            println!("FfMReturn");
+        }
+        OpCode::FfMCall => {
+            // Read function index
+            let func_idx = u32::from_le_bytes((&code[ip..ip+4]).try_into().unwrap());
+            ip += 4;
+            
+            // Read argument count
+            let arg_count = code[ip];
+            ip += 1;
+            
+            print!("FfMCall: func_idx={}, args=[", func_idx);
+            
+            // Parse each argument
+            for i in 0..arg_count {
+                if i > 0 {
+                    print!(", ");
+                }
+                
+                let arg_type = code[ip];
+                ip += 1;
+                
+                match arg_type {
+                    0 => { // i64 literal
+                        let v = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        print!("i64.{}", v);
+                    }
+                    1 => { // ff literal
+                        let v = T::from_le_bytes(&code[ip..ip+T::BYTES]).unwrap();
+                        ip += T::BYTES;
+                        print!("ff.{}", v);
+                    }
+                    2 => { // i64 memory
+                        let addr = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        let size = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        print!("i64.memory({},{})", addr, size);
+                    }
+                    3 => { // ff memory
+                        let addr = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        let size = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        print!("ff.memory({},{})", addr, size);
+                    }
+                    _ => {
+                        print!("unknown_arg_type({})", arg_type);
+                    }
+                }
+            }
+            
+            println!("]");
         }
     }
 
@@ -533,6 +602,17 @@ where
                 let lhs = vm.pop_i64()?;
                 let rhs = vm.pop_i64()?;
                 vm.push_i64(lhs-rhs);
+            }
+            OpCode::FfMReturn => {
+                // TODO: Implement memory return operation
+                // This would pop size, src, dst from stack and copy memory
+                return Err(Box::new(RuntimeError::Assertion(-1)));
+            }
+            OpCode::FfMCall => {
+                // TODO: Implement function call operation
+                // This would read function index and arguments from bytecode
+                // and execute the function
+                return Err(Box::new(RuntimeError::Assertion(-2)));
             }
         }
     }
