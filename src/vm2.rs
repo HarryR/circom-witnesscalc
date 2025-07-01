@@ -117,6 +117,8 @@ pub struct Component {
 pub struct Circuit<T: FieldOps> {
     pub main_template_id: usize,
     pub templates: Vec<Template>,
+    pub functions: Vec<Template>, // Functions are compiled the same way as templates
+    pub function_registry: HashMap<String, usize>, // Function name -> index mapping
     pub field: Field<T>,
     pub witness: Vec<usize>,
     pub input_signals_info: HashMap<String, usize>,

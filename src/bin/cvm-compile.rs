@@ -402,10 +402,21 @@ fn compile<T: FieldOps>(
     ff: &Field<T>, tree: &ast::AST, sym_file: &str) -> Result<Circuit<T>, Box<dyn Error>>
 where {
 
+    // First, compile functions and build function registry
+    let mut functions = Vec::new();
+    let mut function_registry = HashMap::new();
+
+    for (i, f) in tree.functions.iter().enumerate() {
+        let compiled_function = compile_function(f, ff, &function_registry)?;
+        function_registry.insert(f.name.clone(), i);
+        functions.push(compiled_function);
+    }
+
+    // Then compile templates with the function registry
     let mut templates = Vec::new();
 
     for t in tree.templates.iter() {
-        let compiled_template = compile_template(t, ff)?;
+        let compiled_template = compile_template(t, ff, &function_registry)?;
         templates.push(compiled_template);
         // println!("Template: {}", t.name);
         // println!("Compiled code len: {}", compiled_template.code.len());
@@ -424,6 +435,8 @@ where {
     Ok(Circuit {
         main_template_id,
         templates,
+        functions,
+        function_registry,
         field: ff.clone(),
         witness: tree.witness.clone(),
         input_signals_info: input_signals_info(sym_file, main_template_id)?,
@@ -431,7 +444,7 @@ where {
     })
 }
 
-struct TemplateCompilationContext {
+struct TemplateCompilationContext<'a> {
     code: Vec<u8>,
     ff_variable_indexes: HashMap<String, i64>,
     i64_variable_indexes: HashMap<String, i64>,
@@ -441,15 +454,18 @@ struct TemplateCompilationContext {
     // * The second element is a vector of indexes where to inject the
     // position after loop body (the break statement)
     loop_control_jumps: Vec<(usize, Vec<usize>)>,
+    // Function registry for resolving function names to indices
+    function_registry: &'a HashMap<String, usize>,
 }
 
-impl TemplateCompilationContext {
-    fn new() -> Self {
+impl<'a> TemplateCompilationContext<'a> {
+    fn new(function_registry: &'a HashMap<String, usize>) -> Self {
         Self {
             code: vec![],
             ff_variable_indexes: HashMap::new(),
             i64_variable_indexes: HashMap::new(),
             loop_control_jumps: vec![],
+            function_registry,
         }
     }
 
@@ -465,8 +481,8 @@ impl TemplateCompilationContext {
     }
 }
 
-fn operand_i64(
-    ctx: &mut TemplateCompilationContext, operand: &ast::I64Operand) {
+fn operand_i64<'a>(
+    ctx: &mut TemplateCompilationContext<'a>, operand: &ast::I64Operand) {
 
     match operand {
         ast::I64Operand::Literal(v) => {
@@ -481,11 +497,11 @@ fn operand_i64(
     }
 }
 
-fn i64_expression<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
+fn i64_expression<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
     expr: &ast::I64Expr) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
     
     match expr {
         ast::I64Expr::Variable(var_name) => {
@@ -529,11 +545,11 @@ where
     Ok(())
 }
 
-fn ff_expression<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
+fn ff_expression<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
     expr: &ast::FfExpr) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
 
     match expr {
         ast::FfExpr::GetSignal(operand) => {
@@ -602,11 +618,11 @@ where
     Ok(())
 }
 
-fn instruction<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
+fn instruction<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
     inst: &ast::TemplateInstruction) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
 
     match inst {
         ast::TemplateInstruction::FfAssignment(assignment) => {
@@ -708,13 +724,15 @@ where
                     operand_i64(ctx, size);
                     ctx.code.push(OpCode::FfMReturn as u8);
                 },
-                ast::Statement::FfMCall { name: _name, args } => {
+                ast::Statement::FfMCall { name: function_name, args } => {
                     // Emit the FfMCall opcode
                     ctx.code.push(OpCode::FfMCall as u8);
                     
-                    // TODO: Look up function by name to get its index
-                    // For now, use a placeholder index of 0
-                    let func_idx: u32 = 0;
+                    // Look up function by name to get its index
+                    let func_idx = *ctx.function_registry.get(function_name)
+                        .ok_or_else(|| format!("Function '{}' not found", function_name))?;
+                    let func_idx: u32 = func_idx.try_into()
+                        .map_err(|_| "Function index too large")?;
                     ctx.code.extend_from_slice(&func_idx.to_le_bytes());
                     
                     // Emit argument count
@@ -783,11 +801,11 @@ where
     Ok(())
 }
 
-fn block<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
+fn block<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
     instructions: &[ast::TemplateInstruction]) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
 
     for inst in instructions {
         instruction(ctx, ff, inst)?;
@@ -836,11 +854,36 @@ fn pre_emit_jump(code: &mut Vec<u8>) -> usize {
 }
 
 
-fn compile_template<F>(t: &ast::Template, ff: &F) -> Result<vm2::Template, Box<dyn Error>>
+fn compile_function<F>(
+    f: &ast::Function, 
+    ff: &F, 
+    function_registry: &HashMap<String, usize>
+) -> Result<vm2::Template, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations {
 
-    let mut ctx = TemplateCompilationContext::new();
+    let mut ctx = TemplateCompilationContext::new(function_registry);
+    for i in &f.body {
+        instruction(&mut ctx, ff, i)?;
+    }
+
+    Ok(vm2::Template {
+        name: f.name.clone(),
+        code: ctx.code,
+        vars_i64_num: ctx.i64_variable_indexes.len(),
+        vars_ff_num: ctx.ff_variable_indexes.len(),
+    })
+}
+
+fn compile_template<F>(
+    t: &ast::Template, 
+    ff: &F, 
+    function_registry: &HashMap<String, usize>
+) -> Result<vm2::Template, Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations {
+
+    let mut ctx = TemplateCompilationContext::new(function_registry);
     for i in &t.body {
         instruction(&mut ctx, ff, i)?;
     }
@@ -1029,7 +1072,8 @@ mod tests {
             ],
         };
         let ff = Field::new(bn254_prime);
-        let vm_tmpl = compile_template(&ast_tmpl, &ff).unwrap();
+        let function_registry = HashMap::new();
+        let vm_tmpl = compile_template(&ast_tmpl, &ff, &function_registry).unwrap();
         disassemble::<U254>(&[vm_tmpl]);
     }
 
