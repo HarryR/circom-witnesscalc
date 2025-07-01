@@ -156,6 +156,10 @@ pub enum RuntimeError {
     CodeIndexOutOfBounds,
     #[error("component is not initialized")]
     UninitializedComponent,
+    #[error("Memory address is out of bounds")]
+    MemoryAddressOutOfBounds,
+    #[error("Value in the memory is None")]
+    MemoryVariableIsNotSet,
     #[error("assertion: {0}")]
     Assertion(i64),
 }
@@ -163,8 +167,12 @@ pub enum RuntimeError {
 struct VM<T: FieldOps> {
     stack_ff: Vec<Option<T>>,
     stack_i64: Vec<Option<i64>>,
-    base_pointer_ff: usize,
-    base_pointer_i64: usize,
+    stack_base_pointer_ff: usize,
+    stack_base_pointer_i64: usize,
+    memory_ff: Vec<Option<T>>,
+    memory_i64: Vec<Option<i64>>,
+    memory_base_pointer_ff: usize,
+    memory_base_pointer_i64: usize,
 }
 
 impl<T: FieldOps> VM<T> {
@@ -172,8 +180,12 @@ impl<T: FieldOps> VM<T> {
         Self {
             stack_ff: Vec::new(),
             stack_i64: Vec::new(),
-            base_pointer_ff: 0,
-            base_pointer_i64: 0,
+            stack_base_pointer_ff: 0,
+            stack_base_pointer_i64: 0,
+            memory_ff: vec![],
+            memory_i64: vec![],
+            memory_base_pointer_ff: 0,
+            memory_base_pointer_i64: 0,
         }
     }
 
@@ -472,20 +484,20 @@ where
                 (var_idx, ip) = usize_from_code(
                     &templates[component_tree.template_id].code, ip)?;
                 let value = vm.pop_ff()?;
-                vm.stack_ff[vm.base_pointer_ff + var_idx] = Some(value);
+                vm.stack_ff[vm.stack_base_pointer_ff + var_idx] = Some(value);
             }
             OpCode::StoreVariableI64 => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
                     &templates[component_tree.template_id].code, ip)?;
                 let value = vm.pop_i64()?;
-                vm.stack_i64[vm.base_pointer_i64 + var_idx] = Some(value);
+                vm.stack_i64[vm.stack_base_pointer_i64 + var_idx] = Some(value);
             }
             OpCode::LoadVariableI64 => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
                     &templates[component_tree.template_id].code, ip)?;
-                let var = match vm.stack_i64.get(vm.base_pointer_i64 + var_idx) {
+                let var = match vm.stack_i64.get(vm.stack_base_pointer_i64 + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
                 };
@@ -499,7 +511,7 @@ where
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
                     &templates[component_tree.template_id].code, ip)?;
-                let var = match vm.stack_ff.get(vm.base_pointer_ff + var_idx) {
+                let var = match vm.stack_ff.get(vm.stack_base_pointer_ff + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
                 };
@@ -669,12 +681,28 @@ where
                 return Err(Box::new(RuntimeError::Assertion(-2)));
             }
             OpCode::FfStore => {
-                // TODO: Implement memory store operation
-                return Err(Box::new(RuntimeError::Assertion(-3)));
+                let addr: usize = vm.pop_i64()?.try_into()
+                    .map_err(|_| Box::new(RuntimeError::MemoryAddressOutOfBounds))?;
+                let addr = addr.checked_add(vm.memory_base_pointer_ff)
+                    .ok_or(Box::new(RuntimeError::MemoryAddressOutOfBounds))?;
+                if addr >= vm.memory_ff.len() {
+                    vm.memory_ff.resize(addr + 1, None);
+                }
+                let value = vm.pop_ff()?;
+                vm.memory_ff[addr] = Some(value);
             }
             OpCode::FfLoad => {
-                // TODO: Implement memory load operation
-                return Err(Box::new(RuntimeError::Assertion(-4)));
+                let addr: usize = vm.pop_i64()?.try_into()
+                    .map_err(|_| Box::new(RuntimeError::MemoryAddressOutOfBounds))?;
+                let addr = addr.checked_add(vm.memory_base_pointer_ff)
+                    .ok_or(Box::new(RuntimeError::MemoryAddressOutOfBounds))?;
+                if addr >= vm.memory_ff.len() {
+                    return Err(Box::new(RuntimeError::MemoryAddressOutOfBounds));
+                }
+                let value = vm.memory_ff.get(addr)
+                    .and_then(|v| v.as_ref())
+                    .ok_or(RuntimeError::MemoryVariableIsNotSet)?;
+                vm.push_ff(*value);
             }
             OpCode::I64Load => {
                 // TODO: Implement memory load operation
