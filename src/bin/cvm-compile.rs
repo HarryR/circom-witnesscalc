@@ -687,7 +687,7 @@ where
                 ast::Statement::Loop( loop_block ) => {
                     // Start of loop
                     let loop_start = ctx.code.len();
-                    ctx.loop_control_jumps = vec![(loop_start, vec![])];
+                    ctx.loop_control_jumps.push((loop_start, vec![]));
 
                     // Compile loop body
                     block(ctx, ff, loop_block)?;
