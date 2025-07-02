@@ -70,9 +70,13 @@ pub enum OpCode {
     // Function call operation
     // arguments: 4-byte function index + 1-byte argument count
     // Then for each argument:
-    //   1-byte argument type (0=i64 literal, 1=ff literal, 2=i64 memory, 3=ff memory)
+    //   1-byte argument type:
+    //     0 = i64 literal
+    //     1 = ff literal
+    //     4-7 = ff.memory (bit flags: bit 0 = addr is variable, bit 1 = size is variable)
+    //     8-11 = i64.memory (bit flags: bit 0 = addr is variable, bit 1 = size is variable)
     //   For literals: value bytes (8 for i64, T::BYTES for ff)
-    //   For memory: 2 i64 addresses (addr and size)
+    //   For memory: 2 i64 values (either literal values or variable indices based on type flags)
     FfMCall              = 26,
     // Memory store operation (ff.store)
     // stack_ff:0 contains the value to store
@@ -136,6 +140,16 @@ fn read_instruction(code: &[u8], ip: usize) -> OpCode {
     unsafe { std::mem::transmute::<u8, OpCode>(code[ip]) }
 }
 
+// read 4 bytes from the code and return usize and the next instruction pointer
+fn read_usize32(code: &[u8], ip: usize) -> (usize, usize) {
+    let slice = code.get(ip..ip + 4)
+        .expect("Code index out of bounds for usize32 read");
+    let bytes: [u8; 4] = slice.try_into()
+        .expect("Failed to convert slice to [u8; 4]");
+    let v = u32::from_le_bytes(bytes) as usize;
+    (v, ip + 4)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("Stack is empty")]
@@ -162,6 +176,35 @@ pub enum RuntimeError {
     MemoryVariableIsNotSet,
     #[error("assertion: {0}")]
     Assertion(i64),
+    #[error("Call stack overflow (max depth: 16384)")]
+    CallStackOverflow,
+    #[error("Call stack underflow")]
+    CallStackUnderflow,
+    #[error("Invalid function index: {0}")]
+    InvalidFunctionIndex(usize),
+    #[error("Unknown argument type in function call: {0}")]
+    UnknownArgumentType(u8),
+}
+
+#[derive(Debug, Clone)]
+enum ExecutionContext {
+    Template,           // Executing template code
+    Function(usize),    // Executing function code (function index)
+}
+
+#[derive(Debug)]
+struct CallFrame {
+    // Return execution context
+    return_ip: usize,
+    return_context: ExecutionContext,
+    
+    // Stack base pointers to restore
+    return_stack_base_pointer_ff: usize,
+    return_stack_base_pointer_i64: usize,
+    
+    // Memory base pointers to restore  
+    return_memory_base_pointer_ff: usize,
+    return_memory_base_pointer_i64: usize,
 }
 
 struct VM<T: FieldOps> {
@@ -173,6 +216,8 @@ struct VM<T: FieldOps> {
     memory_i64: Vec<Option<i64>>,
     memory_base_pointer_ff: usize,
     memory_base_pointer_i64: usize,
+    call_stack: Vec<CallFrame>,
+    current_execution_context: ExecutionContext,
 }
 
 impl<T: FieldOps> VM<T> {
@@ -186,6 +231,8 @@ impl<T: FieldOps> VM<T> {
             memory_i64: vec![],
             memory_base_pointer_ff: 0,
             memory_base_pointer_i64: 0,
+            call_stack: Vec::new(),
+            current_execution_context: ExecutionContext::Template,
         }
     }
 
@@ -213,6 +260,199 @@ impl<T: FieldOps> VM<T> {
             .try_into()
             .map_err(|_| RuntimeError::I32ToUsizeConversion)
     }
+
+}
+
+// Helper function to calculate the size of function arguments in bytecode
+fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize, RuntimeError> {
+    let mut offset = 0;
+    for _ in 0..arg_count {
+        if offset >= code.len() {
+            return Err(RuntimeError::CodeIndexOutOfBounds);
+        }
+        
+        let arg_type = code[offset];
+        offset += 1;
+        
+        match arg_type {
+            0 => offset += 8,  // i64 literal
+            1 => offset += T::BYTES, // ff literal
+            4..=7 => offset += 16, // ff.memory (addr + size, both i64)
+            8..=11 => offset += 16, // i64.memory (addr + size, both i64)
+            _ => return Err(RuntimeError::CodeIndexOutOfBounds),
+        }
+    }
+    Ok(offset)
+}
+
+// Helper function to process function arguments
+fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, code: &[u8], arg_count: u8) -> Result<(), RuntimeError> {
+    let mut offset = 0;
+    let mut ff_arg_idx = 0;
+    let mut i64_arg_idx = 0;
+    
+    for _ in 0..arg_count {
+        if offset >= code.len() {
+            return Err(RuntimeError::CodeIndexOutOfBounds);
+        }
+        
+        let arg_type = code[offset];
+        offset += 1;
+        
+        match arg_type {
+            0 => { // i64 literal
+                let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                offset += 8;
+                
+                // Store in function's memory
+                if vm.memory_i64.len() <= vm.memory_base_pointer_i64 + i64_arg_idx {
+                    vm.memory_i64.resize(vm.memory_base_pointer_i64 + i64_arg_idx + 1, None);
+                }
+                vm.memory_i64[vm.memory_base_pointer_i64 + i64_arg_idx] = Some(value);
+                i64_arg_idx += 1;
+            }
+            1 => { // ff literal  
+                let value = T::from_le_bytes(&code[offset..offset+T::BYTES]).unwrap();
+                offset += T::BYTES;
+                
+                // Store in function's memory
+                if vm.memory_ff.len() <= vm.memory_base_pointer_ff + ff_arg_idx {
+                    vm.memory_ff.resize(vm.memory_base_pointer_ff + ff_arg_idx + 1, None);
+                }
+                vm.memory_ff[vm.memory_base_pointer_ff + ff_arg_idx] = Some(value);
+                ff_arg_idx += 1;
+            }
+            4..=7 => { // ff.memory argument
+                // Decode bit flags
+                let addr_is_variable = (arg_type & 1) != 0;
+                let size_is_variable = (arg_type & 2) != 0;
+                
+                // Get caller's context from the call frame we just pushed
+                let frame = vm.call_stack.last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let caller_base_pointer_ff = frame.return_memory_base_pointer_ff;
+                let caller_stack_base = frame.return_stack_base_pointer_i64;
+                
+                // Read and resolve address
+                let src_addr = if addr_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+                
+                // Read and resolve size
+                let size = if size_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+                
+                // Add caller's base pointer to source address
+                let src_addr = src_addr + caller_base_pointer_ff;
+                
+                // Ensure source memory is valid
+                if src_addr + size > vm.memory_ff.len() {
+                    return Err(RuntimeError::MemoryAddressOutOfBounds);
+                }
+                
+                // Copy from caller's memory to function's memory
+                let dst_base = vm.memory_base_pointer_ff + ff_arg_idx;
+                if vm.memory_ff.len() <= dst_base + size {
+                    vm.memory_ff.resize(dst_base + size, None);
+                }
+                
+                for i in 0..size {
+                    vm.memory_ff[dst_base + i] = vm.memory_ff[src_addr + i];
+                }
+                
+                ff_arg_idx += size;
+            }
+            8..=11 => { // i64.memory argument
+                // Decode bit flags
+                let addr_is_variable = (arg_type & 1) != 0;
+                let size_is_variable = (arg_type & 2) != 0;
+                
+                // Get caller's context from the call frame we just pushed
+                let frame = vm.call_stack.last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let caller_base_pointer_i64 = frame.return_memory_base_pointer_i64;
+                let caller_stack_base = frame.return_stack_base_pointer_i64;
+                
+                // Read and resolve address
+                let src_addr = if addr_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+                
+                // Read and resolve size
+                let size = if size_is_variable {
+                    // It's a variable index - need to load from caller's stack
+                    let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    
+                    *vm.stack_i64.get(caller_stack_base + var_idx)
+                        .and_then(|v| v.as_ref())
+                        .ok_or(RuntimeError::StackVariableIsNotSet)? as usize
+                } else {
+                    // It's a literal value
+                    let value = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap());
+                    offset += 8;
+                    value as usize
+                };
+                
+                // Add caller's base pointer to source address
+                let src_addr = src_addr + caller_base_pointer_i64;
+                
+                // Ensure source memory is valid
+                if src_addr + size > vm.memory_i64.len() {
+                    return Err(RuntimeError::MemoryAddressOutOfBounds);
+                }
+                
+                // Copy from caller's memory to function's memory
+                let dst_base = vm.memory_base_pointer_i64 + i64_arg_idx;
+                if vm.memory_i64.len() <= dst_base + size {
+                    vm.memory_i64.resize(dst_base + size, None);
+                }
+                
+                for i in 0..size {
+                    vm.memory_i64[dst_base + i] = vm.memory_i64[src_addr + i];
+                }
+                
+                i64_arg_idx += size;
+            }
+            _ => return Err(RuntimeError::UnknownArgumentType(arg_type)),
+        }
+    }
+    
+    Ok(())
 }
 
 // Converts 8 bytes from the code to i64 and then to usize. Returns error
@@ -371,19 +611,51 @@ where
                         ip += T::BYTES;
                         print!("ff.{}", v);
                     }
-                    2 => { // i64 memory
-                        let addr = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                    4..=7 => { // ff memory
+                        let addr_is_variable = (arg_type & 1) != 0;
+                        let size_is_variable = (arg_type & 2) != 0;
+                        
+                        let addr_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
-                        let size = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        let size_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
-                        print!("i64.memory({},{})", addr, size);
+                        
+                        print!("ff.memory(");
+                        if addr_is_variable {
+                            print!("var[{}]", addr_val);
+                        } else {
+                            print!("{}", addr_val);
+                        }
+                        print!(",");
+                        if size_is_variable {
+                            print!("var[{}]", size_val);
+                        } else {
+                            print!("{}", size_val);
+                        }
+                        print!(")");
                     }
-                    3 => { // ff memory
-                        let addr = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                    8..=11 => { // i64 memory
+                        let addr_is_variable = (arg_type & 1) != 0;
+                        let size_is_variable = (arg_type & 2) != 0;
+                        
+                        let addr_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
-                        let size = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        let size_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
-                        print!("ff.memory({},{})", addr, size);
+                        
+                        print!("i64.memory(");
+                        if addr_is_variable {
+                            print!("var[{}]", addr_val);
+                        } else {
+                            print!("{}", addr_val);
+                        }
+                        print!(",");
+                        if size_is_variable {
+                            print!("var[{}]", size_val);
+                        } else {
+                            print!("{}", size_val);
+                        }
+                        print!(")");
                     }
                     _ => {
                         print!("unknown_arg_type({})", arg_type);
@@ -420,7 +692,7 @@ where
 }
 
 pub fn execute<F, T: FieldOps>(
-    templates: &[Template], signals: &mut [Option<T>], ff: &F,
+    circuit: &Circuit<T>, signals: &mut [Option<T>], ff: &F,
     component_tree: &mut Component) -> Result<(), Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations<Type = T> {
@@ -428,21 +700,21 @@ where
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
     vm.stack_ff.resize_with(
-        templates[component_tree.template_id].vars_ff_num, || None);
+        circuit.templates[component_tree.template_id].vars_ff_num, || None);
     vm.stack_i64.resize_with(
-        templates[component_tree.template_id].vars_i64_num, || None);
+        circuit.templates[component_tree.template_id].vars_i64_num, || None);
 
     'label: loop {
-        if ip == templates[component_tree.template_id].code.len() {
+        if ip == circuit.templates[component_tree.template_id].code.len() {
             break 'label;
         }
 
         disassemble_instruction::<T>(
-            &templates[component_tree.template_id].code, ip,
-            &templates[component_tree.template_id].name);
+            &circuit.templates[component_tree.template_id].code, ip,
+            &circuit.templates[component_tree.template_id].name);
 
         let op_code = read_instruction(
-            &templates[component_tree.template_id].code, ip);
+            &circuit.templates[component_tree.template_id].code, ip);
         ip += 1;
 
         match op_code {
@@ -468,12 +740,12 @@ where
             OpCode::PushI64 => {
                 vm.push_i64(
                     i64::from_le_bytes(
-                        (&templates[component_tree.template_id].code[ip..ip+8])
+                        (&circuit.templates[component_tree.template_id].code[ip..ip+8])
                             .try_into().unwrap()));
                 ip += 8;
             }
             OpCode::PushFf => {
-                let s = &templates[component_tree.template_id]
+                let s = &circuit.templates[component_tree.template_id]
                     .code[ip..ip+T::BYTES];
                 ip += T::BYTES;
                 let v = ff.parse_le_bytes(s)?;
@@ -482,21 +754,21 @@ where
             OpCode::StoreVariableFf => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
-                    &templates[component_tree.template_id].code, ip)?;
+                    &circuit.templates[component_tree.template_id].code, ip)?;
                 let value = vm.pop_ff()?;
                 vm.stack_ff[vm.stack_base_pointer_ff + var_idx] = Some(value);
             }
             OpCode::StoreVariableI64 => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
-                    &templates[component_tree.template_id].code, ip)?;
+                    &circuit.templates[component_tree.template_id].code, ip)?;
                 let value = vm.pop_i64()?;
                 vm.stack_i64[vm.stack_base_pointer_i64 + var_idx] = Some(value);
             }
             OpCode::LoadVariableI64 => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
-                    &templates[component_tree.template_id].code, ip)?;
+                    &circuit.templates[component_tree.template_id].code, ip)?;
                 let var = match vm.stack_i64.get(vm.stack_base_pointer_i64 + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
@@ -510,7 +782,7 @@ where
             OpCode::LoadVariableFf => {
                 let var_idx: usize;
                 (var_idx, ip) = usize_from_code(
-                    &templates[component_tree.template_id].code, ip)?;
+                    &circuit.templates[component_tree.template_id].code, ip)?;
                 let var = match vm.stack_ff.get(vm.stack_base_pointer_ff + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
@@ -569,7 +841,7 @@ where
                             }
                         }
                         c.number_of_inputs -= 1;
-                        execute(templates, signals, ff, c)?;
+                        execute(circuit, signals, ff, c)?;
                     }
                 }
             }
@@ -596,7 +868,7 @@ where
                 }
             }
             OpCode::JumpIfFalseFf => {
-                let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &circuit.templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -609,7 +881,7 @@ where
                 }
             }
             OpCode::JumpIfFalseI64 => {
-                let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &circuit.templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -626,7 +898,7 @@ where
                 return Err(Box::new(RuntimeError::Assertion(error_code)));
             }
             OpCode::Jump => {
-                let offset_bytes = &templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &circuit.templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -670,15 +942,88 @@ where
                 vm.push_i64(lhs-rhs);
             }
             OpCode::FfMReturn => {
-                // TODO: Implement memory return operation
-                // This would pop size, src, dst from stack and copy memory
-                return Err(Box::new(RuntimeError::Assertion(-1)));
+                // Pop size, src, dst from stack
+                let size = vm.pop_usize()?;
+                let src_addr = vm.pop_usize()?;
+                let dst_addr = vm.pop_usize()?;
+                
+                // Pop call frame to get return context
+                let call_frame = vm.call_stack.pop()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                
+                // Copy memory from function's space to caller's space
+                for i in 0..size {
+                    let src_idx = src_addr + i + vm.memory_base_pointer_ff;
+                    let dst_idx = dst_addr + i + call_frame.return_memory_base_pointer_ff;
+                    
+                    if src_idx < vm.memory_ff.len() {
+                        if dst_idx >= vm.memory_ff.len() {
+                            vm.memory_ff.resize(dst_idx + 1, None);
+                        }
+                        vm.memory_ff[dst_idx] = vm.memory_ff[src_idx];
+                        // Clean up function memory
+                        vm.memory_ff[src_idx] = None;
+                    }
+                }
+                
+                // Restore execution context
+                ip = call_frame.return_ip;
+                vm.current_execution_context = call_frame.return_context;
+                vm.stack_base_pointer_ff = call_frame.return_stack_base_pointer_ff;
+                vm.stack_base_pointer_i64 = call_frame.return_stack_base_pointer_i64;
+                vm.memory_base_pointer_ff = call_frame.return_memory_base_pointer_ff;
+                vm.memory_base_pointer_i64 = call_frame.return_memory_base_pointer_i64;
+                
+                // Note: For now, we can't handle returning to different code,
+                // so this only works if we're returning to the same template
+                // We'll need to restructure the execute function for full support
             }
             OpCode::FfMCall => {
-                // TODO: Implement function call operation
-                // This would read function index and arguments from bytecode
-                // and execute the function
-                return Err(Box::new(RuntimeError::Assertion(-2)));
+                // Check call stack depth
+                if vm.call_stack.len() >= 16384 {
+                    return Err(Box::new(RuntimeError::CallStackOverflow));
+                }
+                
+                let func_idx: usize;
+                (func_idx, ip) = read_usize32(
+                    &circuit.templates[component_tree.template_id].code, ip);
+
+                // Validate function index
+                if func_idx >= circuit.functions.len() {
+                    return Err(Box::new(RuntimeError::InvalidFunctionIndex(func_idx)));
+                }
+
+                // Read argument count
+                let arg_count = circuit.templates[component_tree.template_id].code[ip];
+                ip += 1;
+                
+                // Create call frame
+                let call_frame = CallFrame {
+                    return_ip: ip + calculate_args_size::<T>(&circuit.templates[component_tree.template_id].code[ip..], arg_count)?,
+                    return_context: vm.current_execution_context.clone(),
+                    return_stack_base_pointer_ff: vm.stack_base_pointer_ff,
+                    return_stack_base_pointer_i64: vm.stack_base_pointer_i64,
+                    return_memory_base_pointer_ff: vm.memory_base_pointer_ff,
+                    return_memory_base_pointer_i64: vm.memory_base_pointer_i64,
+                };
+                vm.call_stack.push(call_frame);
+                
+                // Set up new execution context
+                vm.current_execution_context = ExecutionContext::Function(func_idx);
+                vm.stack_base_pointer_ff = vm.stack_ff.len();
+                vm.stack_base_pointer_i64 = vm.stack_i64.len();
+                vm.memory_base_pointer_ff = vm.memory_ff.len();
+                vm.memory_base_pointer_i64 = vm.memory_i64.len();
+                
+                // Allocate space for function's local variables
+                vm.stack_ff.resize(vm.stack_base_pointer_ff + circuit.functions[func_idx].vars_ff_num, None);
+                vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
+                
+                // Process arguments and copy to function memory
+                process_function_arguments(&mut vm, &circuit.templates[component_tree.template_id].code[ip..], arg_count)?;
+                
+                // For now, return an error since we need to restructure execute for full function support
+                return Err(Box::new(RuntimeError::Assertion(-999))); // Placeholder
             }
             OpCode::FfStore => {
                 let addr: usize = vm.pop_i64()?.try_into()
@@ -705,12 +1050,23 @@ where
                 vm.push_ff(*value);
             }
             OpCode::I64Load => {
-                // TODO: Implement memory load operation
-                return Err(Box::new(RuntimeError::Assertion(-5)));
+                let addr: usize = vm.pop_i64()?.try_into()
+                    .map_err(|_| Box::new(RuntimeError::MemoryAddressOutOfBounds))?;
+                let addr = addr.checked_add(vm.memory_base_pointer_i64)
+                    .ok_or(Box::new(RuntimeError::MemoryAddressOutOfBounds))?;
+                if addr >= vm.memory_i64.len() {
+                    return Err(Box::new(RuntimeError::MemoryAddressOutOfBounds));
+                }
+                let value = vm.memory_i64.get(addr)
+                    .and_then(|v| v.as_ref())
+                    .ok_or(RuntimeError::MemoryVariableIsNotSet)?;
+                vm.push_i64(*value);
             }
             OpCode::OpLt => {
-                // TODO: Implement field less-than comparison
-                return Err(Box::new(RuntimeError::Assertion(-6)));
+                let rhs = vm.pop_ff()?;
+                let lhs = vm.pop_ff()?;
+                let result = ff.lt(lhs, rhs);
+                vm.push_ff(result);
             }
             OpCode::OpI64Mul => {
                 let lhs = vm.pop_i64()?;
@@ -723,8 +1079,13 @@ where
                 vm.push_i64(if lhs <= rhs { 1 } else { 0 });
             }
             OpCode::I64WrapFf => {
-                // TODO: Implement ff to i64 wrapping
-                return Err(Box::new(RuntimeError::Assertion(-7)));
+                let ff_val = vm.pop_ff()?;
+                // Convert field element to i64 by taking lower 64 bits
+                // This matches the behavior expected by i64.wrap_ff
+                let bytes = ff_val.to_le_bytes();
+                let i64_bytes: [u8; 8] = bytes[0..8].try_into().unwrap();
+                let i64_val = i64::from_le_bytes(i64_bytes);
+                vm.push_i64(i64_val);
             }
         }
     }

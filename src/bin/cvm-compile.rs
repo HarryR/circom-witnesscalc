@@ -244,7 +244,7 @@ fn calculate_witness<T: FieldOps>(
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.input_signals_info)?;
-    execute(&circuit.templates, &mut signals, &circuit.field, component_tree)?;
+    execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
         &signals, &circuit.witness, circuit.field.prime)?;
 
@@ -751,7 +751,21 @@ where
                                 ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
                             }
                             ast::CallArgument::I64Memory { addr, size } => {
-                                ctx.code.push(2); // arg type 2 = i64 memory
+                                // i64.memory uses types 8-11 (base 8 = 0b1000)
+                                let mut arg_type = 8u8;
+                                
+                                // Set bit 0 if addr is a variable
+                                if matches!(addr, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 1;
+                                }
+                                
+                                // Set bit 1 if size is a variable
+                                if matches!(size, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 2;
+                                }
+                                
+                                ctx.code.push(arg_type);
+                                
                                 match addr {
                                     ast::I64Operand::Literal(v) => {
                                         ctx.code.extend_from_slice(&v.to_le_bytes());
@@ -772,7 +786,21 @@ where
                                 }
                             }
                             ast::CallArgument::FfMemory { addr, size } => {
-                                ctx.code.push(3); // arg type 3 = ff memory
+                                // ff.memory uses types 4-7 (base 4 = 0b0100)
+                                let mut arg_type = 4u8;
+                                
+                                // Set bit 0 if addr is a variable
+                                if matches!(addr, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 1;
+                                }
+                                
+                                // Set bit 1 if size is a variable
+                                if matches!(size, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 2;
+                                }
+                                
+                                ctx.code.push(arg_type);
+                                
                                 match addr {
                                     ast::I64Operand::Literal(v) => {
                                         ctx.code.extend_from_slice(&v.to_le_bytes());
