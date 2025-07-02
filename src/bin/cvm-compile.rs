@@ -152,6 +152,7 @@ fn main() {
         let mut component_tree = build_component_tree(
             &program.templates, circuit.main_template_id);
         disassemble::<U254>(&circuit.templates);
+        disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
             calculate_witness(
                 &circuit, &mut component_tree, args.want_wtns.unwrap())
@@ -860,6 +861,9 @@ fn patch_jump(
     to: usize) -> Result<(), CompilationError> {
 
     let offset = calc_jump_offset(jump_offset_addr + 4, to)?;
+    // if offset == 0 {
+    //     panic!("0 offset is not allowed for jumps");
+    // }
     code[jump_offset_addr..jump_offset_addr+4].copy_from_slice(offset.to_le_bytes().as_ref());
     Ok(())
 }

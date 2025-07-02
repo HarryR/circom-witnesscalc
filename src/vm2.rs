@@ -477,10 +477,10 @@ pub fn disassemble_instruction<T>(
 where
     T: FieldOps {
 
+    print!("{:08x} [{:10}] ", ip, name);
+
     let op_code = read_instruction(code, ip);
     let mut ip = ip + 1usize;
-
-    print!("{:08x} [{:10}] ", ip, name);
 
     match op_code {
         OpCode::NoOp => {
@@ -691,6 +691,18 @@ where
     ip
 }
 
+// Helper function to get the currently executing template/function
+fn get_current_template<'a, T: FieldOps>(
+    vm: &VM<T>,
+    circuit: &'a Circuit<T>,
+    component_tree: &Component,
+) -> &'a Template {
+    match vm.current_execution_context {
+        ExecutionContext::Template => &circuit.templates[component_tree.template_id],
+        ExecutionContext::Function(func_idx) => &circuit.functions[func_idx],
+    }
+}
+
 pub fn execute<F, T: FieldOps>(
     circuit: &Circuit<T>, signals: &mut [Option<T>], ff: &F,
     component_tree: &mut Component) -> Result<(), Box<dyn Error>>
@@ -699,22 +711,35 @@ where
 
     let mut ip: usize = 0;
     let mut vm = VM::<T>::new();
+    
+    // Initialize with template's variable counts (function calls will resize as needed)
     vm.stack_ff.resize_with(
         circuit.templates[component_tree.template_id].vars_ff_num, || None);
     vm.stack_i64.resize_with(
         circuit.templates[component_tree.template_id].vars_i64_num, || None);
 
+    // Cache current template reference - only update when execution context changes
+    let mut current_template = get_current_template(&vm, circuit, component_tree);
+
     'label: loop {
-        if ip == circuit.templates[component_tree.template_id].code.len() {
-            break 'label;
+        if ip == current_template.code.len() {
+            // Handle end of current execution context
+            match vm.current_execution_context {
+                ExecutionContext::Template => {
+                    // Template completed normally
+                    break 'label;
+                }
+                ExecutionContext::Function(_) => {
+                    // Function ended without explicit return - this is an error
+                    return Err(Box::new(RuntimeError::Assertion(-998))); // Function didn't return
+                }
+            }
         }
 
         disassemble_instruction::<T>(
-            &circuit.templates[component_tree.template_id].code, ip,
-            &circuit.templates[component_tree.template_id].name);
+            &current_template.code, ip, &current_template.name);
 
-        let op_code = read_instruction(
-            &circuit.templates[component_tree.template_id].code, ip);
+        let op_code = read_instruction(&current_template.code, ip);
         ip += 1;
 
         match op_code {
@@ -740,35 +765,31 @@ where
             OpCode::PushI64 => {
                 vm.push_i64(
                     i64::from_le_bytes(
-                        (&circuit.templates[component_tree.template_id].code[ip..ip+8])
+                        (&current_template.code[ip..ip+8])
                             .try_into().unwrap()));
                 ip += 8;
             }
             OpCode::PushFf => {
-                let s = &circuit.templates[component_tree.template_id]
-                    .code[ip..ip+T::BYTES];
+                let s = &current_template.code[ip..ip+T::BYTES];
                 ip += T::BYTES;
                 let v = ff.parse_le_bytes(s)?;
                 vm.push_ff(v);
             }
             OpCode::StoreVariableFf => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(
-                    &circuit.templates[component_tree.template_id].code, ip)?;
+                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
                 let value = vm.pop_ff()?;
                 vm.stack_ff[vm.stack_base_pointer_ff + var_idx] = Some(value);
             }
             OpCode::StoreVariableI64 => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(
-                    &circuit.templates[component_tree.template_id].code, ip)?;
+                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
                 let value = vm.pop_i64()?;
                 vm.stack_i64[vm.stack_base_pointer_i64 + var_idx] = Some(value);
             }
             OpCode::LoadVariableI64 => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(
-                    &circuit.templates[component_tree.template_id].code, ip)?;
+                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
                 let var = match vm.stack_i64.get(vm.stack_base_pointer_i64 + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
@@ -781,8 +802,7 @@ where
             }
             OpCode::LoadVariableFf => {
                 let var_idx: usize;
-                (var_idx, ip) = usize_from_code(
-                    &circuit.templates[component_tree.template_id].code, ip)?;
+                (var_idx, ip) = usize_from_code(&current_template.code, ip)?;
                 let var = match vm.stack_ff.get(vm.stack_base_pointer_ff + var_idx) {
                     Some(v) => v,
                     None => return Err(Box::new(RuntimeError::StackOverflow)),
@@ -868,7 +888,7 @@ where
                 }
             }
             OpCode::JumpIfFalseFf => {
-                let offset_bytes = &circuit.templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &current_template.code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -881,7 +901,7 @@ where
                 }
             }
             OpCode::JumpIfFalseI64 => {
-                let offset_bytes = &circuit.templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &current_template.code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -898,7 +918,7 @@ where
                 return Err(Box::new(RuntimeError::Assertion(error_code)));
             }
             OpCode::Jump => {
-                let offset_bytes = &circuit.templates[component_tree.template_id].code[ip..ip + size_of::<i32>()];
+                let offset_bytes = &current_template.code[ip..ip + size_of::<i32>()];
                 let offset = i32::from_le_bytes((offset_bytes).try_into().unwrap());
                 ip += size_of::<i32>();
 
@@ -974,9 +994,8 @@ where
                 vm.memory_base_pointer_ff = call_frame.return_memory_base_pointer_ff;
                 vm.memory_base_pointer_i64 = call_frame.return_memory_base_pointer_i64;
                 
-                // Note: For now, we can't handle returning to different code,
-                // so this only works if we're returning to the same template
-                // We'll need to restructure the execute function for full support
+                // Switch back to caller's execution context
+                current_template = get_current_template(&vm, circuit, component_tree);
             }
             OpCode::FfMCall => {
                 // Check call stack depth
@@ -985,8 +1004,7 @@ where
                 }
                 
                 let func_idx: usize;
-                (func_idx, ip) = read_usize32(
-                    &circuit.templates[component_tree.template_id].code, ip);
+                (func_idx, ip) = read_usize32(&current_template.code, ip);
 
                 // Validate function index
                 if func_idx >= circuit.functions.len() {
@@ -994,12 +1012,12 @@ where
                 }
 
                 // Read argument count
-                let arg_count = circuit.templates[component_tree.template_id].code[ip];
+                let arg_count = current_template.code[ip];
                 ip += 1;
                 
                 // Create call frame
                 let call_frame = CallFrame {
-                    return_ip: ip + calculate_args_size::<T>(&circuit.templates[component_tree.template_id].code[ip..], arg_count)?,
+                    return_ip: ip + calculate_args_size::<T>(&current_template.code[ip..], arg_count)?,
                     return_context: vm.current_execution_context.clone(),
                     return_stack_base_pointer_ff: vm.stack_base_pointer_ff,
                     return_stack_base_pointer_i64: vm.stack_base_pointer_i64,
@@ -1020,10 +1038,11 @@ where
                 vm.stack_i64.resize(vm.stack_base_pointer_i64 + circuit.functions[func_idx].vars_i64_num, None);
                 
                 // Process arguments and copy to function memory
-                process_function_arguments(&mut vm, &circuit.templates[component_tree.template_id].code[ip..], arg_count)?;
+                process_function_arguments(&mut vm, &current_template.code[ip..], arg_count)?;
                 
-                // For now, return an error since we need to restructure execute for full function support
-                return Err(Box::new(RuntimeError::Assertion(-999))); // Placeholder
+                // Switch to function execution context
+                current_template = get_current_template(&vm, circuit, component_tree);
+                ip = 0; // Start executing function from beginning
             }
             OpCode::FfStore => {
                 let addr: usize = vm.pop_i64()?.try_into()
