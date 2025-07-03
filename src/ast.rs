@@ -239,6 +239,7 @@ pub struct I64Assignment {
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum CallArgument {
+    Variable(String),
     I64Literal(i64),
     FfLiteral(BigUint),
     I64Memory { addr: I64Operand, size: I64Operand },
@@ -272,7 +273,7 @@ pub enum Statement {
     FfMCall {
         name: String,
         args: Vec<CallArgument>,
-    } 
+    }
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]

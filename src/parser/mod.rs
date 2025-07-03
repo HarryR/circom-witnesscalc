@@ -166,6 +166,8 @@ fn parse_call_argument(input: &mut &str) -> ModalResult<CallArgument> {
         // Try to parse literals
         parse_i64_literal.map(CallArgument::I64Literal),
         parse_ff_literal.map(CallArgument::FfLiteral),
+        // Try to parse variable names
+        parse_variable_name.map(|name| CallArgument::Variable(name.to_string())),
     )).parse_next(input)
 }
 

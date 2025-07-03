@@ -393,7 +393,9 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
         println!("[begin]Template: {}", t.name);
         let mut ip: usize = 0;
         while ip < t.code.len() {
-            ip = disassemble_instruction::<T>(&t.code, ip, &t.name);
+            ip = disassemble_instruction::<T>(
+                &t.code, ip, &t.name, &t.ff_variable_names,
+                &t.i64_variable_names);
         }
         println!("[end]")
     }
@@ -445,10 +447,18 @@ where {
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+enum VariableType {
+    Ff,
+    I64,
+}
+
 struct TemplateCompilationContext<'a> {
     code: Vec<u8>,
     ff_variable_indexes: HashMap<String, i64>,
     i64_variable_indexes: HashMap<String, i64>,
+    // Registry to track variable types
+    variable_types: HashMap<String, VariableType>,
     // Stack of loop render frames.
     // * The first element of the tuple is the position of the first loop body
     // instruction (the continue statement).
@@ -465,17 +475,24 @@ impl<'a> TemplateCompilationContext<'a> {
             code: vec![],
             ff_variable_indexes: HashMap::new(),
             i64_variable_indexes: HashMap::new(),
+            variable_types: HashMap::new(),
             loop_control_jumps: vec![],
             function_registry,
         }
     }
 
     fn get_ff_variable_index(&mut self, var_name: &str) -> i64 {
+        // Register the variable type
+        self.variable_types.insert(var_name.to_string(), VariableType::Ff);
+        
         let next_idx = self.ff_variable_indexes.len() as i64;
         *self.ff_variable_indexes
             .entry(var_name.to_string()).or_insert(next_idx)
     }
     fn get_i64_variable_index(&mut self, var_name: &str) -> i64 {
+        // Register the variable type
+        self.variable_types.insert(var_name.to_string(), VariableType::I64);
+        
         let next_idx = self.i64_variable_indexes.len() as i64;
         *self.i64_variable_indexes
             .entry(var_name.to_string()).or_insert(next_idx)
@@ -676,14 +693,23 @@ where
 
                     block(ctx, ff, if_block)?;
 
-                    let to = ctx.code.len();
-                    patch_jump(&mut ctx.code, else_jump_offset, to)?;
+                    if !else_block.is_empty() {
+                        // Only emit end jump if the if block doesn't end with return
+                        let end_jump_offset = pre_emit_jump(&mut ctx.code);
+                        
+                        // Now patch the else_jump to jump to the start of the else block
+                        let else_start = ctx.code.len();
+                        patch_jump(&mut ctx.code, else_jump_offset, else_start)?;
+                        
+                        block(ctx, ff, else_block)?;
 
-                    let end_jump_offset = pre_emit_jump(&mut ctx.code);
-                    block(ctx, ff, else_block)?;
-
-                    let to = ctx.code.len();
-                    patch_jump(&mut ctx.code, end_jump_offset, to)?;
+                        let to = ctx.code.len();
+                        patch_jump(&mut ctx.code, end_jump_offset, to)?;
+                    } else {
+                        // No else block, patch to jump to end
+                        let to = ctx.code.len();
+                        patch_jump(&mut ctx.code, else_jump_offset, to)?;
+                    }
                 },
                 ast::Statement::Loop( loop_block ) => {
                     // Start of loop
@@ -750,6 +776,24 @@ where
                                 ctx.code.push(1); // arg type 1 = ff literal
                                 let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
                                 ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
+                            }
+                            ast::CallArgument::Variable(var_name) => {
+                                // Look up variable type in registry
+                                match ctx.variable_types.get(var_name) {
+                                    Some(VariableType::Ff) => {
+                                        ctx.code.push(2); // arg type 2 = ff variable
+                                        let var_idx = ctx.get_ff_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                    Some(VariableType::I64) => {
+                                        ctx.code.push(3); // arg type 3 = i64 variable
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                    None => {
+                                        return Err(format!("Variable '{}' not found in type registry", var_name).into());
+                                    }
+                                }
                             }
                             ast::CallArgument::I64Memory { addr, size } => {
                                 // i64.memory uses types 8-11 (base 8 = 0b1000)
@@ -861,9 +905,6 @@ fn patch_jump(
     to: usize) -> Result<(), CompilationError> {
 
     let offset = calc_jump_offset(jump_offset_addr + 4, to)?;
-    // if offset == 0 {
-    //     panic!("0 offset is not allowed for jumps");
-    // }
     code[jump_offset_addr..jump_offset_addr+4].copy_from_slice(offset.to_le_bytes().as_ref());
     Ok(())
 }
@@ -899,11 +940,33 @@ where
         instruction(&mut ctx, ff, i)?;
     }
 
+    println!("i64 variables:");
+    for (x, y) in ctx.i64_variable_indexes.iter() {
+        println!("{} {}", x, y);
+    }
+    println!("ff variables:");
+    for (x, y) in ctx.ff_variable_indexes.iter() {
+        println!("{} {}", x, y);
+    }
+
+    // Build reverse mappings for variable names (index -> name)
+    let mut ff_variable_names = HashMap::new();
+    for (name, &index) in &ctx.ff_variable_indexes {
+        ff_variable_names.insert(index as usize, name.clone());
+    }
+
+    let mut i64_variable_names = HashMap::new();
+    for (name, &index) in &ctx.i64_variable_indexes {
+        i64_variable_names.insert(index as usize, name.clone());
+    }
+
     Ok(vm2::Template {
         name: f.name.clone(),
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
+        ff_variable_names,
+        i64_variable_names,
     })
 }
 
@@ -920,17 +983,31 @@ where
         instruction(&mut ctx, ff, i)?;
     }
 
+    // Build reverse mappings for variable names (index -> name)
+    let mut ff_variable_names = HashMap::new();
+    for (name, &index) in &ctx.ff_variable_indexes {
+        ff_variable_names.insert(index as usize, name.clone());
+    }
+
+    let mut i64_variable_names = HashMap::new();
+    for (name, &index) in &ctx.i64_variable_indexes {
+        i64_variable_names.insert(index as usize, name.clone());
+    }
+
     Ok(vm2::Template {
         name: t.name.clone(),
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
+        ff_variable_names,
+        i64_variable_names,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal};
+    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal, Statement, I64Expr, Expr};
+    use circom_witnesscalc::vm2::disassemble_instruction_to_string;
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
 
@@ -1107,6 +1184,58 @@ mod tests {
         let function_registry = HashMap::new();
         let vm_tmpl = compile_template(&ast_tmpl, &ff, &function_registry).unwrap();
         disassemble::<U254>(&[vm_tmpl]);
+    }
+
+    #[test]
+    fn test_compile_branch() {
+        let ff = Field::new(bn254_prime);
+        let function_registry = HashMap::new();
+        let mut ctx = TemplateCompilationContext::new(&function_registry);
+        let inst = TemplateInstruction::Statement(Statement::Branch {
+            condition: Expr::I64(I64Expr::Literal(3)),
+            if_block: vec![
+                TemplateInstruction::FfAssignment(FfAssignment {
+                    dest: "x".to_string(),
+                    value: FfExpr::Literal(BigUint::from(5u32)),
+                }),
+            ],
+            else_block: vec![
+                TemplateInstruction::FfAssignment(FfAssignment {
+                    dest: "x".to_string(),
+                    value: FfExpr::Literal(BigUint::from(10u32)),
+                }),
+            ],
+        });
+        instruction(&mut ctx, &ff, &inst).unwrap();
+        ctx.code.push(OpCode::NoOp as u8);
+
+        // Create empty variable name maps for testing
+        let ff_variable_names = HashMap::new();
+        let i64_variable_names = HashMap::new();
+
+        let want_output = concat!(
+            "00000000 [test      ] PushI64: 3\n",
+            "00000009 [test      ] JumpIfFalseI64: +47 -> 0000003d\n",
+            "0000000e [test      ] PushFf: 5\n",
+            "0000002f [test      ] StoreVariableFf: 0\n",
+            "00000038 [test      ] Jump: +42 -> 00000067\n",
+            "0000003d [test      ] PushFf: 10\n",
+            "0000005e [test      ] StoreVariableFf: 0\n",
+            "00000067 [test      ] NoOp\n",
+        );
+        
+        // Capture disassembly output
+        let mut actual_output = String::new();
+        let mut ip: usize = 0;
+        while ip < ctx.code.len() {
+            let (new_ip, instruction_output) = disassemble_instruction_to_string::<U254>(
+                &ctx.code, ip, "test", &ff_variable_names, &i64_variable_names);
+            actual_output.push_str(&instruction_output);
+            actual_output.push('\n');
+            ip = new_ip;
+        }
+        
+        assert_eq!(actual_output, want_output);
     }
 
     #[test]

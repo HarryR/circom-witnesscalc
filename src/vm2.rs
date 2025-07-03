@@ -134,6 +134,9 @@ pub struct Template {
     pub code: Vec<u8>,
     pub vars_i64_num: usize,
     pub vars_ff_num: usize,
+    // Variable name mappings for debugging
+    pub ff_variable_names: HashMap<usize, String>,
+    pub i64_variable_names: HashMap<usize, String>,
 }
 
 fn read_instruction(code: &[u8], ip: usize) -> OpCode {
@@ -277,6 +280,8 @@ fn calculate_args_size<T: FieldOps>(code: &[u8], arg_count: u8) -> Result<usize,
         match arg_type {
             0 => offset += 8,  // i64 literal
             1 => offset += T::BYTES, // ff literal
+            2 => offset += 8,  // ff variable
+            3 => offset += 8,  // i64 variable
             4..=7 => offset += 16, // ff.memory (addr + size, both i64)
             8..=11 => offset += 16, // i64.memory (addr + size, both i64)
             _ => return Err(RuntimeError::CodeIndexOutOfBounds),
@@ -321,6 +326,48 @@ fn process_function_arguments<T: FieldOps>(vm: &mut VM<T>, code: &[u8], arg_coun
                 }
                 vm.memory_ff[vm.memory_base_pointer_ff + ff_arg_idx] = Some(value);
                 ff_arg_idx += 1;
+            }
+            2 => { // ff variable
+                let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                offset += 8;
+                
+                // Get caller's context from the call frame we just pushed
+                let frame = vm.call_stack.last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let caller_stack_base = frame.return_stack_base_pointer_ff;
+                
+                // Load value from caller's ff variable stack
+                let value = *vm.stack_ff.get(caller_stack_base + var_idx)
+                    .and_then(|v| v.as_ref())
+                    .ok_or(RuntimeError::StackVariableIsNotSet)?;
+                
+                // Store in function's memory
+                if vm.memory_ff.len() <= vm.memory_base_pointer_ff + ff_arg_idx {
+                    vm.memory_ff.resize(vm.memory_base_pointer_ff + ff_arg_idx + 1, None);
+                }
+                vm.memory_ff[vm.memory_base_pointer_ff + ff_arg_idx] = Some(value);
+                ff_arg_idx += 1;
+            }
+            3 => { // i64 variable
+                let var_idx = i64::from_le_bytes(code[offset..offset+8].try_into().unwrap()) as usize;
+                offset += 8;
+                
+                // Get caller's context from the call frame we just pushed
+                let frame = vm.call_stack.last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let caller_stack_base = frame.return_stack_base_pointer_i64;
+                
+                // Load value from caller's i64 variable stack
+                let value = *vm.stack_i64.get(caller_stack_base + var_idx)
+                    .and_then(|v| v.as_ref())
+                    .ok_or(RuntimeError::StackVariableIsNotSet)?;
+                
+                // Store in function's memory
+                if vm.memory_i64.len() <= vm.memory_base_pointer_i64 + i64_arg_idx {
+                    vm.memory_i64.resize(vm.memory_base_pointer_i64 + i64_arg_idx + 1, None);
+                }
+                vm.memory_i64[vm.memory_base_pointer_i64 + i64_arg_idx] = Some(value);
+                i64_arg_idx += 1;
             }
             4..=7 => { // ff.memory argument
                 // Decode bit flags
@@ -472,113 +519,142 @@ fn usize_from_code(
     Ok((v, ip+8))
 }
 
-pub fn disassemble_instruction<T>(
-    code: &[u8], ip: usize, name: &str) -> usize
+pub fn disassemble_instruction_to_string<T>(
+    code: &[u8], ip: usize, name: &str,
+    ff_variable_names: &HashMap<usize, String>,
+    i64_variable_names: &HashMap<usize, String>) -> (usize, String)
 where
     T: FieldOps {
 
-    print!("{:08x} [{:10}] ", ip, name);
+    let mut output = format!("{:08x} [{:10}] ", ip, name);
 
     let op_code = read_instruction(code, ip);
     let mut ip = ip + 1usize;
 
     match op_code {
         OpCode::NoOp => {
-            println!("NoOp");
+            output.push_str("NoOp");
         }
         OpCode::LoadSignal => {
-            println!("LoadSignal");
+            output.push_str("LoadSignal");
         }
         OpCode::StoreSignal => {
-            println!("StoreSignal");
+            output.push_str("StoreSignal");
         }
         OpCode::PushI64 => {
             let v = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
             ip += size_of::<i64>();
-            println!("PushI64: {}", v);
+            output.push_str(&format!("PushI64: {}", v));
         }
         OpCode::PushFf => {
             let s = &code[ip..ip+T::BYTES];
             ip += T::BYTES;
             let v = T::from_le_bytes(s).unwrap();
-            println!("PushFf: {}", v);
+            output.push_str(&format!("PushFf: {}", v));
         }
         OpCode::StoreVariableFf => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            println!("StoreVariableFf: {}", var_idx);
+            let var_name = ff_variable_names.get(&var_idx)
+                .map(|s| format!(" ({})", s))
+                .unwrap_or_default();
+            output.push_str(&format!("StoreVariableFf: {}{}", var_idx, var_name));
         }
         OpCode::StoreVariableI64 => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            println!("StoreVariableI64: {}", var_idx);
+            let var_name = i64_variable_names.get(&var_idx)
+                .map(|s| format!(" ({})", s))
+                .unwrap_or_default();
+            output.push_str(&format!("StoreVariableI64: {}{}", var_idx, var_name));
         }
         OpCode::LoadVariableI64 => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            println!("LoadVariableI64: {}", var_idx);
+            let var_name = i64_variable_names.get(&var_idx)
+                .map(|s| format!(" ({})", s))
+                .unwrap_or_default();
+            output.push_str(&format!("LoadVariableI64: {}{}", var_idx, var_name));
         }
         OpCode::LoadVariableFf => {
             let var_idx: usize;
             (var_idx, ip) = usize_from_code(code, ip).unwrap();
-            println!("LoadVariableFf: {}", var_idx);
+            let var_name = ff_variable_names.get(&var_idx)
+                .map(|s| format!(" ({})", s))
+                .unwrap_or_default();
+            output.push_str(&format!("LoadVariableFf: {}{}", var_idx, var_name));
         }
         OpCode::JumpIfFalseFf => {
             let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
             ip += size_of::<i32>();
-            println!("JumpIfFalseFf: {}", v);
+            let newIP = if v < 0 {
+                ip - (v.unsigned_abs() as usize)
+            } else {
+                ip + (v as usize)
+            };
+            output.push_str(&format!("JumpIfFalseFf: {:+} -> {:08x}", v, newIP));
         }
         OpCode::JumpIfFalseI64 => {
             let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
             ip += size_of::<i32>();
-            println!("JumpIfFalseI64: {}", v);
+            let newIP = if v < 0 {
+                ip - (v.unsigned_abs() as usize)
+            } else {
+                ip + (v as usize)
+            };
+            output.push_str(&format!("JumpIfFalseI64: {:+} -> {:08x}", v, newIP));
         }
         OpCode::Jump => {
             let v = i32::from_le_bytes((&code[ip..ip+size_of::<i32>()]).try_into().unwrap());
             ip += size_of::<i32>();
-            println!("Jump: {}", v);
+            let newIP = if v < 0 {
+                ip - (v.unsigned_abs() as usize)
+            } else {
+                ip + (v as usize)
+            };
+            output.push_str(&format!("Jump: {:+} -> {:08x}", v, newIP));
         }
         OpCode::LoadCmpSignal => {
-            println!("LoadCmpSignal");
+            output.push_str("LoadCmpSignal");
         }
         OpCode::StoreCmpSignalAndRun => {
-            println!("StoreCmpSignalAndRun");
+            output.push_str("StoreCmpSignalAndRun");
         }
         OpCode::StoreCmpInput => {
-            println!("StoreCmpInput");
+            output.push_str("StoreCmpInput");
         }
         OpCode::OpMul => {
-            println!("OpMul");
+            output.push_str("OpMul");
         }
         OpCode::OpAdd => {
-            println!("OpAdd");
+            output.push_str("OpAdd");
         }
         OpCode::OpNeq => {
-            println!("OpNeq");
+            output.push_str("OpNeq");
         }
         OpCode::OpDiv => {
-            println!("OpDiv");
+            output.push_str("OpDiv");
         }
         OpCode::OpSub => {
-            println!("OpSub");
+            output.push_str("OpSub");
         }
         OpCode::OpEq => {
-            println!("OpEq");
+            output.push_str("OpEq");
         }
         OpCode::OpEqz => {
-            println!("OpEqz");
+            output.push_str("OpEqz");
         }
         OpCode::OpI64Add => {
-            println!("OpI64Add");
+            output.push_str("OpI64Add");
         }
         OpCode::OpI64Sub => {
-            println!("OpI64Sub");
+            output.push_str("OpI64Sub");
         }
         OpCode::Error => {
-            println!("Error");
+            output.push_str("Error");
         }
         OpCode::FfMReturn => {
-            println!("FfMReturn");
+            output.push_str("FfMReturn");
         }
         OpCode::FfMCall => {
             // Read function index
@@ -589,12 +665,12 @@ where
             let arg_count = code[ip];
             ip += 1;
             
-            print!("FfMCall: func_idx={}, args=[", func_idx);
+            output.push_str(&format!("FfMCall: func_idx={}, args=[", func_idx));
             
             // Parse each argument
             for i in 0..arg_count {
                 if i > 0 {
-                    print!(", ");
+                    output.push_str(", ");
                 }
                 
                 let arg_type = code[ip];
@@ -604,12 +680,22 @@ where
                     0 => { // i64 literal
                         let v = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
-                        print!("i64.{}", v);
+                        output.push_str(&format!("i64.{}", v));
                     }
                     1 => { // ff literal
                         let v = T::from_le_bytes(&code[ip..ip+T::BYTES]).unwrap();
                         ip += T::BYTES;
-                        print!("ff.{}", v);
+                        output.push_str(&format!("ff.{}", v));
+                    }
+                    2 => { // ff variable
+                        let v = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        output.push_str(&format!("ff.var[{}]", v));
+                    }
+                    3 => { // i64 variable
+                        let v = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
+                        ip += 8;
+                        output.push_str(&format!("i64.var[{}]", v));
                     }
                     4..=7 => { // ff memory
                         let addr_is_variable = (arg_type & 1) != 0;
@@ -620,19 +706,19 @@ where
                         let size_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
                         
-                        print!("ff.memory(");
+                        output.push_str("ff.memory(");
                         if addr_is_variable {
-                            print!("var[{}]", addr_val);
+                            output.push_str(&format!("var[{}]", addr_val));
                         } else {
-                            print!("{}", addr_val);
+                            output.push_str(&format!("{}", addr_val));
                         }
-                        print!(",");
+                        output.push(',');
                         if size_is_variable {
-                            print!("var[{}]", size_val);
+                            output.push_str(&format!("var[{}]", size_val));
                         } else {
-                            print!("{}", size_val);
+                            output.push_str(&format!("{}", size_val));
                         }
-                        print!(")");
+                        output.push(')');
                     }
                     8..=11 => { // i64 memory
                         let addr_is_variable = (arg_type & 1) != 0;
@@ -643,52 +729,64 @@ where
                         let size_val = i64::from_le_bytes((&code[ip..ip+8]).try_into().unwrap());
                         ip += 8;
                         
-                        print!("i64.memory(");
+                        output.push_str("i64.memory(");
                         if addr_is_variable {
-                            print!("var[{}]", addr_val);
+                            output.push_str(&format!("var[{}]", addr_val));
                         } else {
-                            print!("{}", addr_val);
+                            output.push_str(&format!("{}", addr_val));
                         }
-                        print!(",");
+                        output.push(',');
                         if size_is_variable {
-                            print!("var[{}]", size_val);
+                            output.push_str(&format!("var[{}]", size_val));
                         } else {
-                            print!("{}", size_val);
+                            output.push_str(&format!("{}", size_val));
                         }
-                        print!(")");
+                        output.push(')');
                     }
                     _ => {
-                        print!("unknown_arg_type({})", arg_type);
+                        output.push_str(&format!("unknown_arg_type({})", arg_type));
                     }
                 }
             }
             
-            println!("]");
+            output.push(']');
         }
         OpCode::FfStore => {
-            println!("FfStore");
+            output.push_str("FfStore");
         }
         OpCode::FfLoad => {
-            println!("FfLoad");
+            output.push_str("FfLoad");
         }
         OpCode::I64Load => {
-            println!("I64Load");
+            output.push_str("I64Load");
         }
         OpCode::OpLt => {
-            println!("OpLt");
+            output.push_str("OpLt");
         }
         OpCode::OpI64Mul => {
-            println!("OpI64Mul");
+            output.push_str("OpI64Mul");
         }
         OpCode::OpI64Lte => {
-            println!("OpI64Lte");
+            output.push_str("OpI64Lte");
         }
         OpCode::I64WrapFf => {
-            println!("I64WrapFf");
+            output.push_str("I64WrapFf");
         }
     }
 
-    ip
+    (ip, output)
+}
+
+pub fn disassemble_instruction<T>(
+    code: &[u8], ip: usize, name: &str,
+    ff_variable_names: &HashMap<usize, String>,
+    i64_variable_names: &HashMap<usize, String>) -> usize
+where
+    T: FieldOps {
+    let (new_ip, output) = disassemble_instruction_to_string::<T>(
+        code, ip, name, ff_variable_names, i64_variable_names);
+    println!("{}", output);
+    new_ip
 }
 
 // Helper function to get the currently executing template/function
@@ -737,7 +835,9 @@ where
         }
 
         disassemble_instruction::<T>(
-            &current_template.code, ip, &current_template.name);
+            &current_template.code, ip, &current_template.name,
+            &current_template.ff_variable_names,
+            &current_template.i64_variable_names);
 
         let op_code = read_instruction(&current_template.code, ip);
         ip += 1;
@@ -971,6 +1071,9 @@ where
                 let call_frame = vm.call_stack.pop()
                     .ok_or(RuntimeError::CallStackUnderflow)?;
                 
+                eprintln!("DEBUG FfMReturn: current ip={:08x}, return_ip={:08x}", ip, call_frame.return_ip);
+                eprintln!("DEBUG FfMReturn: current context={:?}, return context={:?}", vm.current_execution_context, call_frame.return_context);
+                
                 // Copy memory from function's space to caller's space
                 for i in 0..size {
                     let src_idx = src_addr + i + vm.memory_base_pointer_ff;
@@ -996,6 +1099,7 @@ where
                 
                 // Switch back to caller's execution context
                 current_template = get_current_template(&vm, circuit, component_tree);
+                eprintln!("DEBUG FfMReturn: after restoration ip={:08x}, template={}", ip, current_template.name);
             }
             OpCode::FfMCall => {
                 // Check call stack depth
