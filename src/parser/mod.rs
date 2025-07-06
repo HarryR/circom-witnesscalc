@@ -5,6 +5,7 @@ use winnow::{ModalResult};
 use winnow::combinator::{alt, preceded, repeat, terminated, seq, dispatch, fail, opt, cut_err, trace, eof, delimited};
 use winnow::Parser;
 use winnow::token::{literal, take_till, take_while};
+use winnow::stream::Stream;
 use crate::ast::{CallArgument, FfAssignment, I64Assignment, ComponentsMode, Expr, FfExpr, I64Expr, I64Operand, Signal, Statement, Template, TemplateInstruction, AST, Function};
 
 fn parse_prime(input: &mut &str) -> ModalResult<BigUint> {
@@ -216,9 +217,9 @@ fn parse_instruction_line(input: &mut &str) -> ModalResult<Option<TemplateInstru
         "parse_instruction_line",
         |i: &mut _| {
             alt((
+                parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
                 parse_assignment.map(|x| Some(TemplateInstruction::FfAssignment(x))),
                 parse_i64_assignment.map(|x| Some(TemplateInstruction::I64Assignment(x))),
-                parse_statement.map(|x| Some(TemplateInstruction::Statement(x))),
                 parse_empty_line.map(|_| None),
                 // cut_err(fail.context(StrContext::Label("line"))),
             )).parse_next(i)
@@ -352,6 +353,35 @@ where
 }
 
 fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
+    // First try to parse variable assignment pattern: x_1 = x_2
+    // We need to check if this is a simple variable assignment before trying dispatch
+    let checkpoint = input.checkpoint();
+    
+    // Try to parse as variable = variable
+    if let Ok(name) = parse_variable_name.parse_next(input) {
+        if let Ok(_) = space0::<_, ContextError>.parse_next(input) {
+            if let Ok(_) = literal::<_, _, ContextError>("=").parse_next(input) {
+                if let Ok(_) = space0::<_, ContextError>.parse_next(input) {
+                    if let Ok(value_name) = parse_variable_name.parse_next(input) {
+                        if let Ok(_) = space0::<_, ContextError>.parse_next(input) {
+                            if let Ok(_) = opt(parse_eol_comment).parse_next(input) {
+                                if let Ok(_) = parse_line_end.parse_next(input) {
+                                    return Ok(Statement::Assignment {
+                                        name: name.to_string(),
+                                        value: Expr::Variable(value_name.to_string()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Reset if not a variable assignment
+    input.reset(&checkpoint);
+    
     let s = dispatch! {parse_operator_name;
         "set_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_ff_expr))
             .map(|(op1, op2)| Statement::SetSignal{ idx: op1, value: op2 }),
@@ -2007,6 +2037,47 @@ x";
         };
         let arg = parse_call_argument.parse(input).unwrap();
         assert_eq!(arg, want);
+    }
+
+    #[test]
+    fn test_parse_variable_assignment() {
+        // Test simple variable assignment
+        let input = "x_1 = x_2";
+        let want = Statement::Assignment {
+            name: "x_1".to_string(),
+            value: Expr::Variable("x_2".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with spaces
+        let input = "my_var   =   other_var";
+        let want = Statement::Assignment {
+            name: "my_var".to_string(),
+            value: Expr::Variable("other_var".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with comment
+        let mut input = "result = temp ;; copying temp to result
+x";
+        let want = Statement::Assignment {
+            name: "result".to_string(),
+            value: Expr::Variable("temp".to_string()),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("x", input);
+
+        // Test with underscores and numbers
+        let input = "x_123 = y_456";
+        let want = Statement::Assignment {
+            name: "x_123".to_string(),
+            value: Expr::Variable("y_456".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
     }
 
     #[test]

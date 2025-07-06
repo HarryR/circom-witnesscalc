@@ -8,6 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
+use circom_witnesscalc::ast::Statement;
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
@@ -689,6 +690,7 @@ where
                             i64_expression(ctx, ff, expr)?;
                             pre_emit_jump_if_false(&mut ctx.code, false)
                         },
+                        ast::Expr::Variable(_) => todo!(),
                     };
 
                     block(ctx, ff, if_block)?;
@@ -868,6 +870,52 @@ where
                         }
                     }
                 }
+                Statement::Assignment { name, value } => {
+                    match value {
+                        ast::Expr::Ff(ff_expr) => {
+                            // Same logic as FfAssignment
+                            ff_expression(ctx, ff, ff_expr)?;
+                            ctx.code.push(OpCode::StoreVariableFf as u8);
+                            let var_idx = ctx.get_ff_variable_index(name);
+                            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+                        }
+                        ast::Expr::I64(i64_expr) => {
+                            // Same logic as I64Assignment
+                            i64_expression(ctx, ff, i64_expr)?;
+                            ctx.code.push(OpCode::StoreVariableI64 as u8);
+                            let var_idx = ctx.get_i64_variable_index(name);
+                            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+                        }
+                        ast::Expr::Variable(source_var) => {
+                            // Check the type of the source variable
+                            match ctx.variable_types.get(source_var) {
+                                Some(VariableType::Ff) => {
+                                    // Load from FF variable and store to FF variable
+                                    let source_idx = ctx.get_ff_variable_index(source_var);
+                                    ctx.code.push(OpCode::LoadVariableFf as u8);
+                                    ctx.code.extend_from_slice(source_idx.to_le_bytes().as_slice());
+                                    
+                                    ctx.code.push(OpCode::StoreVariableFf as u8);
+                                    let dest_idx = ctx.get_ff_variable_index(name);
+                                    ctx.code.extend_from_slice(dest_idx.to_le_bytes().as_slice());
+                                }
+                                Some(VariableType::I64) => {
+                                    // Load from I64 variable and store to I64 variable
+                                    let source_idx = ctx.get_i64_variable_index(source_var);
+                                    ctx.code.push(OpCode::LoadVariableI64 as u8);
+                                    ctx.code.extend_from_slice(source_idx.to_le_bytes().as_slice());
+                                    
+                                    ctx.code.push(OpCode::StoreVariableI64 as u8);
+                                    let dest_idx = ctx.get_i64_variable_index(name);
+                                    ctx.code.extend_from_slice(dest_idx.to_le_bytes().as_slice());
+                                }
+                                None => {
+                                    return Err(format!("Variable '{}' not found in type registry", source_var).into());
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     };
@@ -1006,7 +1054,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal, Statement, I64Expr, Expr};
+    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal, Statement, I64Expr, Expr, I64Assignment};
     use circom_witnesscalc::vm2::disassemble_instruction_to_string;
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
@@ -1236,6 +1284,63 @@ mod tests {
         }
         
         assert_eq!(actual_output, want_output);
+    }
+
+    #[test]
+    fn test_compile_assignment() {
+        let ff = Field::new(bn254_prime);
+        let function_registry = HashMap::new();
+        let mut ctx = TemplateCompilationContext::new(&function_registry);
+        
+        // Test 1: Variable assignment (FF to FF)
+        // First, create a source FF variable
+        let inst1 = TemplateInstruction::FfAssignment(FfAssignment {
+            dest: "x_src".to_string(),
+            value: FfExpr::Literal(BigUint::from(42u32)),
+        });
+        instruction(&mut ctx, &ff, &inst1).unwrap();
+        
+        // Now test assignment from variable to variable
+        let inst2 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "x_dest".to_string(),
+            value: Expr::Variable("x_src".to_string()),
+        });
+        instruction(&mut ctx, &ff, &inst2).unwrap();
+        
+        // Test 2: Variable assignment (I64 to I64)
+        let inst3 = TemplateInstruction::I64Assignment(I64Assignment {
+            dest: "i_src".to_string(),
+            value: I64Expr::Literal(100),
+        });
+        instruction(&mut ctx, &ff, &inst3).unwrap();
+        
+        let inst4 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "i_dest".to_string(),
+            value: Expr::Variable("i_src".to_string()),
+        });
+        instruction(&mut ctx, &ff, &inst4).unwrap();
+        
+        // Test 3: Direct FF expression assignment
+        let inst5 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "x_direct".to_string(),
+            value: Expr::Ff(FfExpr::Literal(BigUint::from(99u32))),
+        });
+        instruction(&mut ctx, &ff, &inst5).unwrap();
+        
+        // Test 4: Direct I64 expression assignment
+        let inst6 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "i_direct".to_string(),
+            value: Expr::I64(I64Expr::Literal(200)),
+        });
+        instruction(&mut ctx, &ff, &inst6).unwrap();
+        
+        // Verify that variable types were tracked correctly
+        assert!(matches!(ctx.variable_types.get("x_src"), Some(&VariableType::Ff)));
+        assert!(matches!(ctx.variable_types.get("x_dest"), Some(&VariableType::Ff)));
+        assert!(matches!(ctx.variable_types.get("i_src"), Some(&VariableType::I64)));
+        assert!(matches!(ctx.variable_types.get("i_dest"), Some(&VariableType::I64)));
+        assert!(matches!(ctx.variable_types.get("x_direct"), Some(&VariableType::Ff)));
+        assert!(matches!(ctx.variable_types.get("i_direct"), Some(&VariableType::I64)));
     }
 
     #[test]

@@ -248,6 +248,10 @@ pub enum CallArgument {
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Statement {
+    Assignment {
+        name: String,
+        value: Expr,
+    },
     SetSignal { idx: I64Operand, value: FfExpr },
     FfStore { idx: I64Operand, value: FfExpr },
     SetCmpSignalRun {
@@ -294,6 +298,7 @@ pub enum UnoOp {
 pub enum Expr {
     Ff(FfExpr),
     I64(I64Expr),
+    Variable(String),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]
