@@ -265,6 +265,23 @@ fn parse_i64_assignment(input: &mut &str) -> ModalResult<I64Assignment> {
     })
 }
 
+fn parse_assignment_variable(input: &mut &str) -> ModalResult<Statement> {
+    let (lhv, _, _, _, rhv, _, _, _) = seq!(
+        parse_variable_name,
+        space0,
+        literal("="),
+        space0,
+        parse_variable_name,
+        space0,
+        opt(parse_eol_comment),
+        parse_line_end
+    ).parse_next(input)?;
+    Ok(Statement::Assignment {
+        name: lhv.to_string(),
+        value: Expr::Variable(rhv.to_string()),
+    })
+}
+
 fn parse_assignment(input: &mut &str) -> ModalResult<FfAssignment> {
     let (var_name, _, _, _, expr, _, _, _) = seq!(
         parse_variable_name,
@@ -353,35 +370,17 @@ where
 }
 
 fn parse_statement(input: &mut &str) -> ModalResult<Statement> {
-    // First try to parse variable assignment pattern: x_1 = x_2
-    // We need to check if this is a simple variable assignment before trying dispatch
     let checkpoint = input.checkpoint();
-    
-    // Try to parse as variable = variable
-    if let Ok(name) = parse_variable_name.parse_next(input) {
-        if let Ok(_) = space0::<_, ContextError>.parse_next(input) {
-            if let Ok(_) = literal::<_, _, ContextError>("=").parse_next(input) {
-                if let Ok(_) = space0::<_, ContextError>.parse_next(input) {
-                    if let Ok(value_name) = parse_variable_name.parse_next(input) {
-                        if let Ok(_) = space0::<_, ContextError>.parse_next(input) {
-                            if let Ok(_) = opt(parse_eol_comment).parse_next(input) {
-                                if let Ok(_) = parse_line_end.parse_next(input) {
-                                    return Ok(Statement::Assignment {
-                                        name: name.to_string(),
-                                        value: Expr::Variable(value_name.to_string()),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+    match parse_assignment_variable.parse_next(input) {
+        Ok(assignment) => return Ok(assignment),
+        Err(err) => {
+            if let ErrMode::Cut(_) = err {
+                return Err(err);
             }
         }
     }
-    
-    // Reset if not a variable assignment
     input.reset(&checkpoint);
-    
+
     let s = dispatch! {parse_operator_name;
         "set_signal" => (preceded(space1, parse_i64_operand), preceded(space1, parse_ff_expr))
             .map(|(op1, op2)| Statement::SetSignal{ idx: op1, value: op2 }),
@@ -2081,6 +2080,47 @@ x";
     }
 
     #[test]
+    fn test_parse_assignment_variable() {
+        // Test simple variable assignment
+        let input = "x_1 = x_2";
+        let want = Statement::Assignment {
+            name: "x_1".to_string(),
+            value: Expr::Variable("x_2".to_string()),
+        };
+        let statement = parse_assignment_variable.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with spaces
+        let input = "my_var   =   other_var";
+        let want = Statement::Assignment {
+            name: "my_var".to_string(),
+            value: Expr::Variable("other_var".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+
+        // Test with comment
+        let mut input = "result = temp ;; copying temp to result
+x";
+        let want = Statement::Assignment {
+            name: "result".to_string(),
+            value: Expr::Variable("temp".to_string()),
+        };
+        let statement = parse_statement.parse_next(&mut input).unwrap();
+        assert_eq!(statement, want);
+        assert_eq!("x", input);
+
+        // Test with underscores and numbers
+        let input = "x_123 = y_456";
+        let want = Statement::Assignment {
+            name: "x_123".to_string(),
+            value: Expr::Variable("y_456".to_string()),
+        };
+        let statement = parse_statement.parse(input).unwrap();
+        assert_eq!(statement, want);
+    }
+
+    #[test]
     fn test_parse_ff_mcall() {
         // Test with simple case first
         let input = "ff.mcall $f1_0 i64.6";
@@ -2090,7 +2130,7 @@ x";
                 CallArgument::I64Literal(6),
             ],
         };
-        let statement = parse_statement.parse(input).unwrap();
+        let statement = consume_parse_result(parse_statement.parse(input));
         assert_eq!(statement, want);
 
         // Test with basic example: ff.mcall $f1_0 i64.6 i64.9 ff.3 ff.memory(i64.2,i64.4)
