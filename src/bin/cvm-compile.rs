@@ -8,7 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
-use circom_witnesscalc::ast::Statement;
+use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
@@ -518,45 +518,45 @@ fn operand_i64<'a>(
 
 fn i64_expression<'a, F>(
     ctx: &mut TemplateCompilationContext<'a>, ff: &F,
-    expr: &ast::I64Expr) -> Result<(), Box<dyn Error>>
+    expr: &I64Expr) -> Result<(), Box<dyn Error>>
 where
     for <'b> &'b F: FieldOperations {
     
     match expr {
-        ast::I64Expr::Variable(var_name) => {
+        I64Expr::Variable(var_name) => {
             let var_idx = ctx.get_i64_variable_index(var_name);
             ctx.code.push(OpCode::LoadVariableI64 as u8);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }
-        ast::I64Expr::Literal(value) => {
+        I64Expr::Literal(value) => {
             ctx.code.push(OpCode::PushI64 as u8);
             ctx.code.extend_from_slice(value.to_le_bytes().as_slice());
         }
-        ast::I64Expr::Add(lhs, rhs) => {
+        I64Expr::Add(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Add as u8);
         }
-        ast::I64Expr::Sub(lhs, rhs) => {
+        I64Expr::Sub(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Sub as u8);
         }
-        ast::I64Expr::Mul(lhs, rhs) => {
+        I64Expr::Mul(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Mul as u8);
         }
-        ast::I64Expr::Lte(lhs, rhs) => {
+        I64Expr::Lte(lhs, rhs) => {
             i64_expression(ctx, ff, rhs)?;
             i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Lte as u8);
         }
-        ast::I64Expr::Load(addr) => {
+        I64Expr::Load(addr) => {
             operand_i64(ctx, addr);
             ctx.code.push(OpCode::I64Load as u8);
         }
-        ast::I64Expr::Wrap(ff_expr) => {
+        I64Expr::Wrap(ff_expr) => {
             ff_expression(ctx, ff, ff_expr)?;
             ctx.code.push(OpCode::I64WrapFf as u8);
         }
@@ -566,69 +566,69 @@ where
 
 fn ff_expression<'a, F>(
     ctx: &mut TemplateCompilationContext<'a>, ff: &F,
-    expr: &ast::FfExpr) -> Result<(), Box<dyn Error>>
+    expr: &FfExpr) -> Result<(), Box<dyn Error>>
 where
     for <'b> &'b F: FieldOperations {
 
     match expr {
-        ast::FfExpr::GetSignal(operand) => {
+        FfExpr::GetSignal(operand) => {
             operand_i64(ctx, operand);
             ctx.code.push(OpCode::LoadSignal as u8);
         }
-        ast::FfExpr::GetCmpSignal{ cmp_idx, sig_idx } => {
+        FfExpr::GetCmpSignal{ cmp_idx, sig_idx } => {
             operand_i64(ctx, cmp_idx);
             operand_i64(ctx, sig_idx);
             ctx.code.push(OpCode::LoadCmpSignal as u8);
         }
-        ast::FfExpr::FfMul(lhs, rhs) => {
+        FfExpr::FfMul(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpMul as u8);
         },
-        ast::FfExpr::FfAdd(lhs, rhs) => {
+        FfExpr::FfAdd(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpAdd as u8);
         },
-        ast::FfExpr::FfNeq(lhs, rhs) => {
+        FfExpr::FfNeq(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpNeq as u8);
         },
-        ast::FfExpr::FfDiv(lhs, rhs) => {
+        FfExpr::FfDiv(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpDiv as u8);
         },
-        ast::FfExpr::FfSub(lhs, rhs) => {
+        FfExpr::FfSub(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpSub as u8);
         },
-        ast::FfExpr::FfEq(lhs, rhs) => {
+        FfExpr::FfEq(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpEq as u8);
         },
-        ast::FfExpr::FfEqz(lhs) => {
+        FfExpr::FfEqz(lhs) => {
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpEqz as u8);
         },
-        ast::FfExpr::Variable( var_name ) => {
+        FfExpr::Variable( var_name ) => {
             let var_idx = ctx.get_ff_variable_index(var_name);
             ctx.code.push(OpCode::LoadVariableFf as u8);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         },
-        ast::FfExpr::Literal(v) => {
+        FfExpr::Literal(v) => {
             ctx.code.push(OpCode::PushFf as u8);
             let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
         },
-        ast::FfExpr::Load(idx) => {
+        FfExpr::Load(idx) => {
             operand_i64(ctx, idx);
             ctx.code.push(OpCode::FfLoad as u8);
         },
-        ast::FfExpr::Lt(lhs, rhs) => {
+        FfExpr::Lt(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpLt as u8);
@@ -658,39 +658,61 @@ where
         }
         ast::TemplateInstruction::Statement(statement) => {
             match statement {
-                ast::Statement::SetSignal { idx, value } => {
+                Statement::SetSignal { idx, value } => {
                     ff_expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
                 },
-                ast::Statement::FfStore { idx, value } => {
+                Statement::FfStore { idx, value } => {
                     ff_expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::FfStore as u8);
                 },
-                ast::Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
+                Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
                     operand_i64(ctx, cmp_idx);
                     operand_i64(ctx, sig_idx);
                     ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
                 },
-                ast::Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
+                Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
                     i64_expression(ctx, ff, cmp_idx)?;
                     i64_expression(ctx, ff, sig_idx)?;
                     ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpInput as u8);
                 },
-                ast::Statement::Branch { condition, if_block, else_block } => {
-                    let else_jump_offset = match condition {
-                        ast::Expr::Ff(expr) => {
+                Statement::Branch { condition, if_block, else_block } => {
+                    // Resolve variable references to their typed equivalents
+                    let resolved_condition: Expr;
+                    let condition_to_evaluate = if let Expr::Variable(var_name) = condition {
+                        match ctx.variable_types.get(var_name) {
+                            Some(VariableType::Ff) => {
+                                resolved_condition = Expr::Ff(FfExpr::Variable(var_name.clone()));
+                                &resolved_condition
+                            }
+                            Some(VariableType::I64) => {
+                                resolved_condition = Expr::I64(I64Expr::Variable(var_name.clone()));
+                                &resolved_condition
+                            }
+                            None => {
+                                return Err(format!("Variable '{}' not found in type registry", var_name).into());
+                            }
+                        }
+                    } else {
+                        condition
+                    };
+
+                    let else_jump_offset = match condition_to_evaluate {
+                        Expr::Ff(expr) => {
                             ff_expression(ctx, ff, expr)?;
                             pre_emit_jump_if_false(&mut ctx.code, true)
                         },
-                        ast::Expr::I64(expr) => {
+                        Expr::I64(expr) => {
                             i64_expression(ctx, ff, expr)?;
                             pre_emit_jump_if_false(&mut ctx.code, false)
                         },
-                        ast::Expr::Variable(_) => todo!(),
+                        Expr::Variable( .. ) => {
+                            panic!("[assertion] expression should be already converted to Ff or I64");
+                        },
                     };
 
                     block(ctx, ff, if_block)?;
@@ -713,7 +735,7 @@ where
                         patch_jump(&mut ctx.code, else_jump_offset, to)?;
                     }
                 },
-                ast::Statement::Loop( loop_block ) => {
+                Statement::Loop( loop_block ) => {
                     // Start of loop
                     let loop_start = ctx.code.len();
                     ctx.loop_control_jumps.push((loop_start, vec![]));
@@ -728,7 +750,7 @@ where
                         patch_jump(&mut ctx.code, break_jump_offset, to)?;
                     }
                 },
-                ast::Statement::Break => {
+                Statement::Break => {
                     let jump_offset = pre_emit_jump(&mut ctx.code);
                     if let Some((_, break_jumps)) = ctx.loop_control_jumps.last_mut() {
                         break_jumps.push(jump_offset);
@@ -736,16 +758,16 @@ where
                         return Err(Box::new(CompilationError::LoopControlJumpsEmpty));
                     }
                 },
-                ast::Statement::Continue => {
+                Statement::Continue => {
                     let jump_offset = pre_emit_jump(&mut ctx.code);
                     patch_jump(&mut ctx.code, jump_offset, ctx.loop_control_jumps.last()
                         .ok_or(CompilationError::LoopControlJumpsEmpty)?.0)?;
                 },
-                ast::Statement::Error { code } => {
+                Statement::Error { code } => {
                     operand_i64(ctx, code);
                     ctx.code.push(OpCode::Error as u8);
                 },
-                ast::Statement::FfMReturn { dst, src, size } => {
+                Statement::FfMReturn { dst, src, size } => {
                     // Push operands in reverse order so they are popped in correct order
                     // The VM expects: stack[-2]=dst, stack[-1]=src, stack[0]=size
                     operand_i64(ctx, dst);
@@ -753,7 +775,7 @@ where
                     operand_i64(ctx, size);
                     ctx.code.push(OpCode::FfMReturn as u8);
                 },
-                ast::Statement::FfMCall { name: function_name, args } => {
+                Statement::FfMCall { name: function_name, args } => {
                     // Emit the FfMCall opcode
                     ctx.code.push(OpCode::FfMCall as u8);
                     
@@ -872,21 +894,21 @@ where
                 }
                 Statement::Assignment { name, value } => {
                     match value {
-                        ast::Expr::Ff(ff_expr) => {
+                        Expr::Ff(ff_expr) => {
                             // Same logic as FfAssignment
                             ff_expression(ctx, ff, ff_expr)?;
                             ctx.code.push(OpCode::StoreVariableFf as u8);
                             let var_idx = ctx.get_ff_variable_index(name);
                             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
                         }
-                        ast::Expr::I64(i64_expr) => {
+                        Expr::I64(i64_expr) => {
                             // Same logic as I64Assignment
                             i64_expression(ctx, ff, i64_expr)?;
                             ctx.code.push(OpCode::StoreVariableI64 as u8);
                             let var_idx = ctx.get_i64_variable_index(name);
                             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
                         }
-                        ast::Expr::Variable(source_var) => {
+                        Expr::Variable(source_var) => {
                             // Check the type of the source variable
                             match ctx.variable_types.get(source_var) {
                                 Some(VariableType::Ff) => {
@@ -1223,7 +1245,7 @@ mod tests {
                             Box::new(FfExpr::Variable("x_2".to_string())),
                             Box::new(FfExpr::Literal(BigUint::from(2u32))))}),
                 TemplateInstruction::Statement(
-                    ast::Statement::SetSignal {
+                    Statement::SetSignal {
                         idx: I64Operand::Literal(0),
                         value: FfExpr::Variable("x_3".to_string())})
             ],
