@@ -213,6 +213,12 @@ pub struct Template {
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+pub struct Function {
+    pub name: String,
+    pub body: Vec<TemplateInstruction>,
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum TemplateInstruction {
     FfAssignment(FfAssignment),
     I64Assignment(I64Assignment),
@@ -232,8 +238,22 @@ pub struct I64Assignment {
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
+pub enum CallArgument {
+    Variable(String),
+    I64Literal(i64),
+    FfLiteral(BigUint),
+    I64Memory { addr: I64Operand, size: I64Operand },
+    FfMemory { addr: I64Operand, size: I64Operand },
+}
+
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub enum Statement {
+    Assignment {
+        name: String,
+        value: Expr,
+    },
     SetSignal { idx: I64Operand, value: FfExpr },
+    FfStore { idx: I64Operand, value: FfExpr },
     SetCmpSignalRun {
         cmp_idx: I64Operand,
         sig_idx: I64Operand,
@@ -253,6 +273,11 @@ pub enum Statement {
     Loop(Vec<TemplateInstruction>),
     Break,
     Continue,
+    FfMReturn { dst: I64Operand, src: I64Operand, size: I64Operand },
+    FfMCall {
+        name: String,
+        args: Vec<CallArgument>,
+    }
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]
@@ -273,6 +298,7 @@ pub enum UnoOp {
 pub enum Expr {
     Ff(FfExpr),
     I64(I64Expr),
+    Variable(String),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]
@@ -286,8 +312,10 @@ pub enum FfExpr {
     FfSub(Box<FfExpr>, Box<FfExpr>),
     FfEq(Box<FfExpr>, Box<FfExpr>),
     FfEqz(Box<FfExpr>),
+    Lt(Box<FfExpr>, Box<FfExpr>),
     Variable(String),
     Literal(BigUint),
+    Load(I64Operand),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug, Clone))]
@@ -296,6 +324,10 @@ pub enum I64Expr {
     Literal(i64),
     Add(Box<I64Expr>, Box<I64Expr>),
     Sub(Box<I64Expr>, Box<I64Expr>),
+    Mul(Box<I64Expr>, Box<I64Expr>),
+    Load(I64Operand),
+    Wrap(Box<FfExpr>),
+    Lte(Box<I64Expr>, Box<I64Expr>),
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -318,5 +350,6 @@ pub struct AST {
     pub start: String,
     pub components_mode: ComponentsMode,
     pub witness: Vec<usize>,
+    pub functions: Vec<Function>,
     pub templates: Vec<Template>,
 }

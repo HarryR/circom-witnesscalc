@@ -8,6 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, ToBytes};
 use wtns_file::FieldElement;
 use circom_witnesscalc::{ast, vm2, wtns_from_witness2};
+use circom_witnesscalc::ast::{Expr, FfExpr, I64Expr, Statement};
 use circom_witnesscalc::field::{bn254_prime, Field, FieldOperations, FieldOps, U254};
 use circom_witnesscalc::parser::parse;
 use circom_witnesscalc::vm2::{disassemble_instruction, execute, Circuit, Component, OpCode};
@@ -152,6 +153,7 @@ fn main() {
         let mut component_tree = build_component_tree(
             &program.templates, circuit.main_template_id);
         disassemble::<U254>(&circuit.templates);
+        disassemble::<U254>(&circuit.functions);
         if args.want_wtns.is_some() {
             calculate_witness(
                 &circuit, &mut component_tree, args.want_wtns.unwrap())
@@ -244,7 +246,7 @@ fn calculate_witness<T: FieldOps>(
     let mut signals = init_signals(
         &want_wtns.inputs_file, circuit.signals_num, &circuit.field,
         &circuit.input_signals_info)?;
-    execute(&circuit.templates, &mut signals, &circuit.field, component_tree)?;
+    execute(circuit, &mut signals, &circuit.field, component_tree)?;
     let wtns_data = witness(
         &signals, &circuit.witness, circuit.field.prime)?;
 
@@ -392,7 +394,9 @@ fn disassemble<T: FieldOps>(templates: &[vm2::Template]) {
         println!("[begin]Template: {}", t.name);
         let mut ip: usize = 0;
         while ip < t.code.len() {
-            ip = disassemble_instruction::<T>(&t.code, ip, &t.name);
+            ip = disassemble_instruction::<T>(
+                &t.code, ip, &t.name, &t.ff_variable_names,
+                &t.i64_variable_names);
         }
         println!("[end]")
     }
@@ -402,10 +406,21 @@ fn compile<T: FieldOps>(
     ff: &Field<T>, tree: &ast::AST, sym_file: &str) -> Result<Circuit<T>, Box<dyn Error>>
 where {
 
+    // First, compile functions and build function registry
+    let mut functions = Vec::new();
+    let mut function_registry = HashMap::new();
+
+    for (i, f) in tree.functions.iter().enumerate() {
+        let compiled_function = compile_function(f, ff, &function_registry)?;
+        function_registry.insert(f.name.clone(), i);
+        functions.push(compiled_function);
+    }
+
+    // Then compile templates with the function registry
     let mut templates = Vec::new();
 
     for t in tree.templates.iter() {
-        let compiled_template = compile_template(t, ff)?;
+        let compiled_template = compile_template(t, ff, &function_registry)?;
         templates.push(compiled_template);
         // println!("Template: {}", t.name);
         // println!("Compiled code len: {}", compiled_template.code.len());
@@ -424,6 +439,8 @@ where {
     Ok(Circuit {
         main_template_id,
         templates,
+        functions,
+        function_registry,
         field: ff.clone(),
         witness: tree.witness.clone(),
         input_signals_info: input_signals_info(sym_file, main_template_id)?,
@@ -431,42 +448,60 @@ where {
     })
 }
 
-struct TemplateCompilationContext {
+#[derive(Debug, Clone, Copy)]
+enum VariableType {
+    Ff,
+    I64,
+}
+
+struct TemplateCompilationContext<'a> {
     code: Vec<u8>,
     ff_variable_indexes: HashMap<String, i64>,
     i64_variable_indexes: HashMap<String, i64>,
+    // Registry to track variable types
+    variable_types: HashMap<String, VariableType>,
     // Stack of loop render frames.
     // * The first element of the tuple is the position of the first loop body
     // instruction (the continue statement).
     // * The second element is a vector of indexes where to inject the
     // position after loop body (the break statement)
     loop_control_jumps: Vec<(usize, Vec<usize>)>,
+    // Function registry for resolving function names to indices
+    function_registry: &'a HashMap<String, usize>,
 }
 
-impl TemplateCompilationContext {
-    fn new() -> Self {
+impl<'a> TemplateCompilationContext<'a> {
+    fn new(function_registry: &'a HashMap<String, usize>) -> Self {
         Self {
             code: vec![],
             ff_variable_indexes: HashMap::new(),
             i64_variable_indexes: HashMap::new(),
+            variable_types: HashMap::new(),
             loop_control_jumps: vec![],
+            function_registry,
         }
     }
 
     fn get_ff_variable_index(&mut self, var_name: &str) -> i64 {
+        // Register the variable type
+        self.variable_types.insert(var_name.to_string(), VariableType::Ff);
+        
         let next_idx = self.ff_variable_indexes.len() as i64;
         *self.ff_variable_indexes
             .entry(var_name.to_string()).or_insert(next_idx)
     }
     fn get_i64_variable_index(&mut self, var_name: &str) -> i64 {
+        // Register the variable type
+        self.variable_types.insert(var_name.to_string(), VariableType::I64);
+        
         let next_idx = self.i64_variable_indexes.len() as i64;
         *self.i64_variable_indexes
             .entry(var_name.to_string()).or_insert(next_idx)
     }
 }
 
-fn operand_i64(
-    ctx: &mut TemplateCompilationContext, operand: &ast::I64Operand) {
+fn operand_i64<'a>(
+    ctx: &mut TemplateCompilationContext<'a>, operand: &ast::I64Operand) {
 
     match operand {
         ast::I64Operand::Literal(v) => {
@@ -481,103 +516,132 @@ fn operand_i64(
     }
 }
 
-fn i64_expression(
-    ctx: &mut TemplateCompilationContext,
-    expr: &ast::I64Expr) -> Result<(), Box<dyn Error>> {
+fn i64_expression<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
+    expr: &I64Expr) -> Result<(), Box<dyn Error>>
+where
+    for <'b> &'b F: FieldOperations {
     
     match expr {
-        ast::I64Expr::Variable(var_name) => {
+        I64Expr::Variable(var_name) => {
             let var_idx = ctx.get_i64_variable_index(var_name);
             ctx.code.push(OpCode::LoadVariableI64 as u8);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }
-        ast::I64Expr::Literal(value) => {
+        I64Expr::Literal(value) => {
             ctx.code.push(OpCode::PushI64 as u8);
             ctx.code.extend_from_slice(value.to_le_bytes().as_slice());
         }
-        ast::I64Expr::Add(lhs, rhs) => {
-            i64_expression(ctx, rhs)?;
-            i64_expression(ctx, lhs)?;
+        I64Expr::Add(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Add as u8);
         }
-        ast::I64Expr::Sub(lhs, rhs) => {
-            i64_expression(ctx, rhs)?;
-            i64_expression(ctx, lhs)?;
+        I64Expr::Sub(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpI64Sub as u8);
+        }
+        I64Expr::Mul(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Mul as u8);
+        }
+        I64Expr::Lte(lhs, rhs) => {
+            i64_expression(ctx, ff, rhs)?;
+            i64_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpI64Lte as u8);
+        }
+        I64Expr::Load(addr) => {
+            operand_i64(ctx, addr);
+            ctx.code.push(OpCode::I64Load as u8);
+        }
+        I64Expr::Wrap(ff_expr) => {
+            ff_expression(ctx, ff, ff_expr)?;
+            ctx.code.push(OpCode::I64WrapFf as u8);
         }
     }
     Ok(())
 }
 
-fn ff_expression<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
-    expr: &ast::FfExpr) -> Result<(), Box<dyn Error>>
+fn ff_expression<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
+    expr: &FfExpr) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
 
     match expr {
-        ast::FfExpr::GetSignal(operand) => {
+        FfExpr::GetSignal(operand) => {
             operand_i64(ctx, operand);
             ctx.code.push(OpCode::LoadSignal as u8);
         }
-        ast::FfExpr::GetCmpSignal{ cmp_idx, sig_idx } => {
+        FfExpr::GetCmpSignal{ cmp_idx, sig_idx } => {
             operand_i64(ctx, cmp_idx);
             operand_i64(ctx, sig_idx);
             ctx.code.push(OpCode::LoadCmpSignal as u8);
         }
-        ast::FfExpr::FfMul(lhs, rhs) => {
+        FfExpr::FfMul(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpMul as u8);
         },
-        ast::FfExpr::FfAdd(lhs, rhs) => {
+        FfExpr::FfAdd(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpAdd as u8);
         },
-        ast::FfExpr::FfNeq(lhs, rhs) => {
+        FfExpr::FfNeq(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpNeq as u8);
         },
-        ast::FfExpr::FfDiv(lhs, rhs) => {
+        FfExpr::FfDiv(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpDiv as u8);
         },
-        ast::FfExpr::FfSub(lhs, rhs) => {
+        FfExpr::FfSub(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpSub as u8);
         },
-        ast::FfExpr::FfEq(lhs, rhs) => {
+        FfExpr::FfEq(lhs, rhs) => {
             ff_expression(ctx, ff, rhs)?;
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpEq as u8);
         },
-        ast::FfExpr::FfEqz(lhs) => {
+        FfExpr::FfEqz(lhs) => {
             ff_expression(ctx, ff, lhs)?;
             ctx.code.push(OpCode::OpEqz as u8);
         },
-        ast::FfExpr::Variable( var_name ) => {
+        FfExpr::Variable( var_name ) => {
             let var_idx = ctx.get_ff_variable_index(var_name);
             ctx.code.push(OpCode::LoadVariableFf as u8);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         },
-        ast::FfExpr::Literal(v) => {
+        FfExpr::Literal(v) => {
             ctx.code.push(OpCode::PushFf as u8);
             let x = ff.parse_le_bytes(v.to_le_bytes().as_slice())?;
             ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
+        },
+        FfExpr::Load(idx) => {
+            operand_i64(ctx, idx);
+            ctx.code.push(OpCode::FfLoad as u8);
+        },
+        FfExpr::Lt(lhs, rhs) => {
+            ff_expression(ctx, ff, rhs)?;
+            ff_expression(ctx, ff, lhs)?;
+            ctx.code.push(OpCode::OpLt as u8);
         },
     };
     Ok(())
 }
 
-fn instruction<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
+fn instruction<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
     inst: &ast::TemplateInstruction) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
 
     match inst {
         ast::TemplateInstruction::FfAssignment(assignment) => {
@@ -587,57 +651,94 @@ where
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }
         ast::TemplateInstruction::I64Assignment(assignment) => {
-            i64_expression(ctx, &assignment.value)?;
+            i64_expression(ctx, ff, &assignment.value)?;
             ctx.code.push(OpCode::StoreVariableI64 as u8);
             let var_idx = ctx.get_i64_variable_index(&assignment.dest);
             ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
         }
         ast::TemplateInstruction::Statement(statement) => {
             match statement {
-                ast::Statement::SetSignal { idx, value } => {
+                Statement::SetSignal { idx, value } => {
                     ff_expression(ctx, ff, value)?;
                     operand_i64(ctx, idx);
                     ctx.code.push(OpCode::StoreSignal as u8);
                 },
-                ast::Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
+                Statement::FfStore { idx, value } => {
+                    ff_expression(ctx, ff, value)?;
+                    operand_i64(ctx, idx);
+                    ctx.code.push(OpCode::FfStore as u8);
+                },
+                Statement::SetCmpSignalRun { cmp_idx, sig_idx, value } => {
                     operand_i64(ctx, cmp_idx);
                     operand_i64(ctx, sig_idx);
                     ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpSignalAndRun as u8);
                 },
-                ast::Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
-                    i64_expression(ctx, cmp_idx)?;
-                    i64_expression(ctx, sig_idx)?;
+                Statement::SetCmpInput { cmp_idx, sig_idx, value } => {
+                    i64_expression(ctx, ff, cmp_idx)?;
+                    i64_expression(ctx, ff, sig_idx)?;
                     ff_expression(ctx, ff, value)?;
                     ctx.code.push(OpCode::StoreCmpInput as u8);
                 },
-                ast::Statement::Branch { condition, if_block, else_block } => {
-                    let else_jump_offset = match condition {
-                        ast::Expr::Ff(expr) => {
+                Statement::Branch { condition, if_block, else_block } => {
+                    // Resolve variable references to their typed equivalents
+                    let resolved_condition: Expr;
+                    let condition_to_evaluate = if let Expr::Variable(var_name) = condition {
+                        match ctx.variable_types.get(var_name) {
+                            Some(VariableType::Ff) => {
+                                resolved_condition = Expr::Ff(FfExpr::Variable(var_name.clone()));
+                                &resolved_condition
+                            }
+                            Some(VariableType::I64) => {
+                                resolved_condition = Expr::I64(I64Expr::Variable(var_name.clone()));
+                                &resolved_condition
+                            }
+                            None => {
+                                return Err(format!("Variable '{}' not found in type registry", var_name).into());
+                            }
+                        }
+                    } else {
+                        condition
+                    };
+
+                    let else_jump_offset = match condition_to_evaluate {
+                        Expr::Ff(expr) => {
                             ff_expression(ctx, ff, expr)?;
                             pre_emit_jump_if_false(&mut ctx.code, true)
                         },
-                        ast::Expr::I64(expr) => {
-                            i64_expression(ctx, expr)?;
+                        Expr::I64(expr) => {
+                            i64_expression(ctx, ff, expr)?;
                             pre_emit_jump_if_false(&mut ctx.code, false)
+                        },
+                        Expr::Variable( .. ) => {
+                            panic!("[assertion] expression should be already converted to Ff or I64");
                         },
                     };
 
                     block(ctx, ff, if_block)?;
 
-                    let to = ctx.code.len();
-                    patch_jump(&mut ctx.code, else_jump_offset, to)?;
+                    if !else_block.is_empty() {
+                        // Only emit end jump if the if block doesn't end with return
+                        let end_jump_offset = pre_emit_jump(&mut ctx.code);
+                        
+                        // Now patch the else_jump to jump to the start of the else block
+                        let else_start = ctx.code.len();
+                        patch_jump(&mut ctx.code, else_jump_offset, else_start)?;
+                        
+                        block(ctx, ff, else_block)?;
 
-                    let end_jump_offset = pre_emit_jump(&mut ctx.code);
-                    block(ctx, ff, else_block)?;
-
-                    let to = ctx.code.len();
-                    patch_jump(&mut ctx.code, end_jump_offset, to)?;
+                        let to = ctx.code.len();
+                        patch_jump(&mut ctx.code, end_jump_offset, to)?;
+                    } else {
+                        // No else block, patch to jump to end
+                        let to = ctx.code.len();
+                        patch_jump(&mut ctx.code, else_jump_offset, to)?;
+                    }
                 },
-                ast::Statement::Loop( loop_block ) => {
+                Statement::Loop( loop_block ) => {
                     // Start of loop
                     let loop_start = ctx.code.len();
-                    ctx.loop_control_jumps = vec![(loop_start, vec![])];
+                    ctx.loop_control_jumps.push((loop_start, vec![]));
 
                     // Compile loop body
                     block(ctx, ff, loop_block)?;
@@ -649,7 +750,7 @@ where
                         patch_jump(&mut ctx.code, break_jump_offset, to)?;
                     }
                 },
-                ast::Statement::Break => {
+                Statement::Break => {
                     let jump_offset = pre_emit_jump(&mut ctx.code);
                     if let Some((_, break_jumps)) = ctx.loop_control_jumps.last_mut() {
                         break_jumps.push(jump_offset);
@@ -657,14 +758,185 @@ where
                         return Err(Box::new(CompilationError::LoopControlJumpsEmpty));
                     }
                 },
-                ast::Statement::Continue => {
+                Statement::Continue => {
                     let jump_offset = pre_emit_jump(&mut ctx.code);
                     patch_jump(&mut ctx.code, jump_offset, ctx.loop_control_jumps.last()
                         .ok_or(CompilationError::LoopControlJumpsEmpty)?.0)?;
                 },
-                ast::Statement::Error { code } => {
+                Statement::Error { code } => {
                     operand_i64(ctx, code);
                     ctx.code.push(OpCode::Error as u8);
+                },
+                Statement::FfMReturn { dst, src, size } => {
+                    // Push operands in reverse order so they are popped in correct order
+                    // The VM expects: stack[-2]=dst, stack[-1]=src, stack[0]=size
+                    operand_i64(ctx, dst);
+                    operand_i64(ctx, src);
+                    operand_i64(ctx, size);
+                    ctx.code.push(OpCode::FfMReturn as u8);
+                },
+                Statement::FfMCall { name: function_name, args } => {
+                    // Emit the FfMCall opcode
+                    ctx.code.push(OpCode::FfMCall as u8);
+                    
+                    // Look up function by name to get its index
+                    let func_idx = *ctx.function_registry.get(function_name)
+                        .ok_or_else(|| format!("Function '{}' not found", function_name))?;
+                    let func_idx: u32 = func_idx.try_into()
+                        .map_err(|_| "Function index too large")?;
+                    ctx.code.extend_from_slice(&func_idx.to_le_bytes());
+                    
+                    // Emit argument count
+                    ctx.code.push(args.len() as u8);
+                    
+                    // Emit each argument
+                    for arg in args {
+                        match arg {
+                            ast::CallArgument::I64Literal(value) => {
+                                ctx.code.push(0); // arg type 0 = i64 literal
+                                ctx.code.extend_from_slice(&value.to_le_bytes());
+                            }
+                            ast::CallArgument::FfLiteral(value) => {
+                                ctx.code.push(1); // arg type 1 = ff literal
+                                let x = ff.parse_le_bytes(value.to_le_bytes().as_slice())?;
+                                ctx.code.extend_from_slice(x.to_le_bytes().as_slice());
+                            }
+                            ast::CallArgument::Variable(var_name) => {
+                                // Look up variable type in registry
+                                match ctx.variable_types.get(var_name) {
+                                    Some(VariableType::Ff) => {
+                                        ctx.code.push(2); // arg type 2 = ff variable
+                                        let var_idx = ctx.get_ff_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                    Some(VariableType::I64) => {
+                                        ctx.code.push(3); // arg type 3 = i64 variable
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                    None => {
+                                        return Err(format!("Variable '{}' not found in type registry", var_name).into());
+                                    }
+                                }
+                            }
+                            ast::CallArgument::I64Memory { addr, size } => {
+                                // i64.memory uses types 8-11 (base 8 = 0b1000)
+                                let mut arg_type = 8u8;
+                                
+                                // Set bit 0 if addr is a variable
+                                if matches!(addr, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 1;
+                                }
+                                
+                                // Set bit 1 if size is a variable
+                                if matches!(size, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 2;
+                                }
+                                
+                                ctx.code.push(arg_type);
+                                
+                                match addr {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                                match size {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                            }
+                            ast::CallArgument::FfMemory { addr, size } => {
+                                // ff.memory uses types 4-7 (base 4 = 0b0100)
+                                let mut arg_type = 4u8;
+                                
+                                // Set bit 0 if addr is a variable
+                                if matches!(addr, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 1;
+                                }
+                                
+                                // Set bit 1 if size is a variable
+                                if matches!(size, ast::I64Operand::Variable(_)) {
+                                    arg_type |= 2;
+                                }
+                                
+                                ctx.code.push(arg_type);
+                                
+                                match addr {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                                match size {
+                                    ast::I64Operand::Literal(v) => {
+                                        ctx.code.extend_from_slice(&v.to_le_bytes());
+                                    }
+                                    ast::I64Operand::Variable(var_name) => {
+                                        let var_idx = ctx.get_i64_variable_index(var_name);
+                                        ctx.code.extend_from_slice(&var_idx.to_le_bytes());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Statement::Assignment { name, value } => {
+                    match value {
+                        Expr::Ff(ff_expr) => {
+                            // Same logic as FfAssignment
+                            ff_expression(ctx, ff, ff_expr)?;
+                            ctx.code.push(OpCode::StoreVariableFf as u8);
+                            let var_idx = ctx.get_ff_variable_index(name);
+                            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+                        }
+                        Expr::I64(i64_expr) => {
+                            // Same logic as I64Assignment
+                            i64_expression(ctx, ff, i64_expr)?;
+                            ctx.code.push(OpCode::StoreVariableI64 as u8);
+                            let var_idx = ctx.get_i64_variable_index(name);
+                            ctx.code.extend_from_slice(var_idx.to_le_bytes().as_slice());
+                        }
+                        Expr::Variable(source_var) => {
+                            // Check the type of the source variable
+                            match ctx.variable_types.get(source_var) {
+                                Some(VariableType::Ff) => {
+                                    // Load from FF variable and store to FF variable
+                                    let source_idx = ctx.get_ff_variable_index(source_var);
+                                    ctx.code.push(OpCode::LoadVariableFf as u8);
+                                    ctx.code.extend_from_slice(source_idx.to_le_bytes().as_slice());
+                                    
+                                    ctx.code.push(OpCode::StoreVariableFf as u8);
+                                    let dest_idx = ctx.get_ff_variable_index(name);
+                                    ctx.code.extend_from_slice(dest_idx.to_le_bytes().as_slice());
+                                }
+                                Some(VariableType::I64) => {
+                                    // Load from I64 variable and store to I64 variable
+                                    let source_idx = ctx.get_i64_variable_index(source_var);
+                                    ctx.code.push(OpCode::LoadVariableI64 as u8);
+                                    ctx.code.extend_from_slice(source_idx.to_le_bytes().as_slice());
+                                    
+                                    ctx.code.push(OpCode::StoreVariableI64 as u8);
+                                    let dest_idx = ctx.get_i64_variable_index(name);
+                                    ctx.code.extend_from_slice(dest_idx.to_le_bytes().as_slice());
+                                }
+                                None => {
+                                    return Err(format!("Variable '{}' not found in type registry", source_var).into());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -672,11 +944,11 @@ where
     Ok(())
 }
 
-fn block<F>(
-    ctx: &mut TemplateCompilationContext, ff: &F,
+fn block<'a, F>(
+    ctx: &mut TemplateCompilationContext<'a>, ff: &F,
     instructions: &[ast::TemplateInstruction]) -> Result<(), Box<dyn Error>>
 where
-    for <'a> &'a F: FieldOperations {
+    for <'b> &'b F: FieldOperations {
 
     for inst in instructions {
         instruction(ctx, ff, inst)?;
@@ -725,13 +997,71 @@ fn pre_emit_jump(code: &mut Vec<u8>) -> usize {
 }
 
 
-fn compile_template<F>(t: &ast::Template, ff: &F) -> Result<vm2::Template, Box<dyn Error>>
+fn compile_function<F>(
+    f: &ast::Function, 
+    ff: &F, 
+    function_registry: &HashMap<String, usize>
+) -> Result<vm2::Template, Box<dyn Error>>
 where
     for <'a> &'a F: FieldOperations {
 
-    let mut ctx = TemplateCompilationContext::new();
+    let mut ctx = TemplateCompilationContext::new(function_registry);
+    for i in &f.body {
+        instruction(&mut ctx, ff, i)?;
+    }
+
+    println!("i64 variables:");
+    for (x, y) in ctx.i64_variable_indexes.iter() {
+        println!("{} {}", x, y);
+    }
+    println!("ff variables:");
+    for (x, y) in ctx.ff_variable_indexes.iter() {
+        println!("{} {}", x, y);
+    }
+
+    // Build reverse mappings for variable names (index -> name)
+    let mut ff_variable_names = HashMap::new();
+    for (name, &index) in &ctx.ff_variable_indexes {
+        ff_variable_names.insert(index as usize, name.clone());
+    }
+
+    let mut i64_variable_names = HashMap::new();
+    for (name, &index) in &ctx.i64_variable_indexes {
+        i64_variable_names.insert(index as usize, name.clone());
+    }
+
+    Ok(vm2::Template {
+        name: f.name.clone(),
+        code: ctx.code,
+        vars_i64_num: ctx.i64_variable_indexes.len(),
+        vars_ff_num: ctx.ff_variable_indexes.len(),
+        ff_variable_names,
+        i64_variable_names,
+    })
+}
+
+fn compile_template<F>(
+    t: &ast::Template, 
+    ff: &F, 
+    function_registry: &HashMap<String, usize>
+) -> Result<vm2::Template, Box<dyn Error>>
+where
+    for <'a> &'a F: FieldOperations {
+
+    let mut ctx = TemplateCompilationContext::new(function_registry);
     for i in &t.body {
         instruction(&mut ctx, ff, i)?;
+    }
+
+    // Build reverse mappings for variable names (index -> name)
+    let mut ff_variable_names = HashMap::new();
+    for (name, &index) in &ctx.ff_variable_indexes {
+        ff_variable_names.insert(index as usize, name.clone());
+    }
+
+    let mut i64_variable_names = HashMap::new();
+    for (name, &index) in &ctx.i64_variable_indexes {
+        i64_variable_names.insert(index as usize, name.clone());
     }
 
     Ok(vm2::Template {
@@ -739,12 +1069,15 @@ where
         code: ctx.code,
         vars_i64_num: ctx.i64_variable_indexes.len(),
         vars_ff_num: ctx.ff_variable_indexes.len(),
+        ff_variable_names,
+        i64_variable_names,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal};
+    use circom_witnesscalc::ast::{FfAssignment, FfExpr, I64Operand, TemplateInstruction, Signal, Statement, I64Expr, Expr, I64Assignment};
+    use circom_witnesscalc::vm2::disassemble_instruction_to_string;
     use circom_witnesscalc::field::{bn254_prime, Field};
     use super::*;
 
@@ -912,14 +1245,124 @@ mod tests {
                             Box::new(FfExpr::Variable("x_2".to_string())),
                             Box::new(FfExpr::Literal(BigUint::from(2u32))))}),
                 TemplateInstruction::Statement(
-                    ast::Statement::SetSignal {
+                    Statement::SetSignal {
                         idx: I64Operand::Literal(0),
                         value: FfExpr::Variable("x_3".to_string())})
             ],
         };
         let ff = Field::new(bn254_prime);
-        let vm_tmpl = compile_template(&ast_tmpl, &ff).unwrap();
+        let function_registry = HashMap::new();
+        let vm_tmpl = compile_template(&ast_tmpl, &ff, &function_registry).unwrap();
         disassemble::<U254>(&[vm_tmpl]);
+    }
+
+    #[test]
+    fn test_compile_branch() {
+        let ff = Field::new(bn254_prime);
+        let function_registry = HashMap::new();
+        let mut ctx = TemplateCompilationContext::new(&function_registry);
+        let inst = TemplateInstruction::Statement(Statement::Branch {
+            condition: Expr::I64(I64Expr::Literal(3)),
+            if_block: vec![
+                TemplateInstruction::FfAssignment(FfAssignment {
+                    dest: "x".to_string(),
+                    value: FfExpr::Literal(BigUint::from(5u32)),
+                }),
+            ],
+            else_block: vec![
+                TemplateInstruction::FfAssignment(FfAssignment {
+                    dest: "x".to_string(),
+                    value: FfExpr::Literal(BigUint::from(10u32)),
+                }),
+            ],
+        });
+        instruction(&mut ctx, &ff, &inst).unwrap();
+        ctx.code.push(OpCode::NoOp as u8);
+
+        // Create empty variable name maps for testing
+        let ff_variable_names = HashMap::new();
+        let i64_variable_names = HashMap::new();
+
+        let want_output = concat!(
+            "00000000 [test      ] PushI64: 3\n",
+            "00000009 [test      ] JumpIfFalseI64: +47 -> 0000003d\n",
+            "0000000e [test      ] PushFf: 5\n",
+            "0000002f [test      ] StoreVariableFf: 0\n",
+            "00000038 [test      ] Jump: +42 -> 00000067\n",
+            "0000003d [test      ] PushFf: 10\n",
+            "0000005e [test      ] StoreVariableFf: 0\n",
+            "00000067 [test      ] NoOp\n",
+        );
+        
+        // Capture disassembly output
+        let mut actual_output = String::new();
+        let mut ip: usize = 0;
+        while ip < ctx.code.len() {
+            let (new_ip, instruction_output) = disassemble_instruction_to_string::<U254>(
+                &ctx.code, ip, "test", &ff_variable_names, &i64_variable_names);
+            actual_output.push_str(&instruction_output);
+            actual_output.push('\n');
+            ip = new_ip;
+        }
+        
+        assert_eq!(actual_output, want_output);
+    }
+
+    #[test]
+    fn test_compile_assignment() {
+        let ff = Field::new(bn254_prime);
+        let function_registry = HashMap::new();
+        let mut ctx = TemplateCompilationContext::new(&function_registry);
+        
+        // Test 1: Variable assignment (FF to FF)
+        // First, create a source FF variable
+        let inst1 = TemplateInstruction::FfAssignment(FfAssignment {
+            dest: "x_src".to_string(),
+            value: FfExpr::Literal(BigUint::from(42u32)),
+        });
+        instruction(&mut ctx, &ff, &inst1).unwrap();
+        
+        // Now test assignment from variable to variable
+        let inst2 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "x_dest".to_string(),
+            value: Expr::Variable("x_src".to_string()),
+        });
+        instruction(&mut ctx, &ff, &inst2).unwrap();
+        
+        // Test 2: Variable assignment (I64 to I64)
+        let inst3 = TemplateInstruction::I64Assignment(I64Assignment {
+            dest: "i_src".to_string(),
+            value: I64Expr::Literal(100),
+        });
+        instruction(&mut ctx, &ff, &inst3).unwrap();
+        
+        let inst4 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "i_dest".to_string(),
+            value: Expr::Variable("i_src".to_string()),
+        });
+        instruction(&mut ctx, &ff, &inst4).unwrap();
+        
+        // Test 3: Direct FF expression assignment
+        let inst5 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "x_direct".to_string(),
+            value: Expr::Ff(FfExpr::Literal(BigUint::from(99u32))),
+        });
+        instruction(&mut ctx, &ff, &inst5).unwrap();
+        
+        // Test 4: Direct I64 expression assignment
+        let inst6 = TemplateInstruction::Statement(Statement::Assignment {
+            name: "i_direct".to_string(),
+            value: Expr::I64(I64Expr::Literal(200)),
+        });
+        instruction(&mut ctx, &ff, &inst6).unwrap();
+        
+        // Verify that variable types were tracked correctly
+        assert!(matches!(ctx.variable_types.get("x_src"), Some(&VariableType::Ff)));
+        assert!(matches!(ctx.variable_types.get("x_dest"), Some(&VariableType::Ff)));
+        assert!(matches!(ctx.variable_types.get("i_src"), Some(&VariableType::I64)));
+        assert!(matches!(ctx.variable_types.get("i_dest"), Some(&VariableType::I64)));
+        assert!(matches!(ctx.variable_types.get("x_direct"), Some(&VariableType::Ff)));
+        assert!(matches!(ctx.variable_types.get("i_direct"), Some(&VariableType::I64)));
     }
 
     #[test]
