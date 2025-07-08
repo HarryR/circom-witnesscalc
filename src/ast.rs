@@ -209,32 +209,13 @@ pub struct Template {
     pub inputs: Vec<Signal>,
     pub signals_num: usize,
     pub components: Vec<Option<usize>>,
-    pub body: Vec<TemplateInstruction>,
+    pub body: Vec<Statement>,
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub struct Function {
     pub name: String,
-    pub body: Vec<TemplateInstruction>,
-}
-
-#[cfg_attr(test, derive(PartialEq, Debug))]
-pub enum TemplateInstruction {
-    FfAssignment(FfAssignment),
-    I64Assignment(I64Assignment),
-    Statement(Statement),
-}
-
-#[cfg_attr(test, derive(PartialEq, Debug))]
-pub struct FfAssignment {
-    pub dest: String,
-    pub value: FfExpr,
-}
-
-#[cfg_attr(test, derive(PartialEq, Debug))]
-pub struct I64Assignment {
-    pub dest: String,
-    pub value: I64Expr,
+    pub body: Vec<Statement>,
 }
 
 #[cfg_attr(test, derive(PartialEq, Debug))]
@@ -267,10 +248,10 @@ pub enum Statement {
     Error { code: I64Operand },
     Branch {
         condition: Expr,
-        if_block: Vec<TemplateInstruction>,
-        else_block: Vec<TemplateInstruction>
+        if_block: Vec<Statement>,
+        else_block: Vec<Statement>
     },
-    Loop(Vec<TemplateInstruction>),
+    Loop(Vec<Statement>),
     Break,
     Continue,
     FfMReturn { dst: I64Operand, src: I64Operand, size: I64Operand },
@@ -280,7 +261,11 @@ pub enum Statement {
     }
 }
 
-#[cfg_attr(test, derive(PartialEq, Debug, Clone))]
+// Clone is always derived (not just in tests) to allow usage across crate boundaries.
+// When types are used by binary crates (like cvm-compile), the library is compiled
+// without test configuration, so conditional derives wouldn't be available.
+#[cfg_attr(test, derive(PartialEq, Debug))]
+#[derive(Clone)]
 pub enum I64Operand {
     Variable(String),
     Literal(i64),
@@ -301,7 +286,9 @@ pub enum Expr {
     Variable(String),
 }
 
-#[cfg_attr(test, derive(PartialEq, Debug, Clone))]
+// See I64Operand comment above for why Clone is always derived
+#[cfg_attr(test, derive(PartialEq, Debug))]
+#[derive(Clone)]
 pub enum FfExpr {
     GetSignal(I64Operand),
     GetCmpSignal{ cmp_idx: I64Operand, sig_idx: I64Operand },
@@ -318,7 +305,9 @@ pub enum FfExpr {
     Load(I64Operand),
 }
 
-#[cfg_attr(test, derive(PartialEq, Debug, Clone))]
+// See I64Operand comment above for why Clone is always derived
+#[cfg_attr(test, derive(PartialEq, Debug))]
+#[derive(Clone)]
 pub enum I64Expr {
     Variable(String),
     Literal(i64),
